@@ -9,6 +9,8 @@ from pathlib import Path
 import pandas as pd
 from metaflow import S3, IncludeFile, current
 
+from data.loaddata.DataLoader import execute_data_loader
+
 PYTHON = "3.12"
 
 PACKAGES = {
@@ -35,7 +37,7 @@ class FlowMixin:
             "Local copy of the match_stats dataset. This file will be included in the "
             "flow and will be used whenever the flow is executed in development mode."
         ),
-        default="data/match_stats.csv",
+        default="data/preprocessed/match_stats.csv",
     )
 
     def load_dataset(self):
@@ -78,16 +80,17 @@ def configure_logging():
             level=logging.INFO,
         )
 
-def build_model(learning_rate=0.01):
+def build_model(learning_rate=0.01, scale_pos_weight=None):
     from xgboost import XGBClassifier
 
     model = XGBClassifier(
         learning_rate=learning_rate,
         n_estimators=100,
-        max_depth=3,
+        max_depth=6,
         objective='binary:logistic',
         use_label_encoder=False,
-        eval_metric=['logloss', 'aucpr']
+        eval_metric=['logloss', 'aucpr'],
+        scale_pos_weight=scale_pos_weight
     )
 
     return model
