@@ -67,8 +67,7 @@ SQL_QUERY_MATCH = "SELECT m.match_api_id," \
                   " LEFT JOIN Player AS A10 on A10.player_api_id = m.away_player_10" \
                   " LEFT JOIN Player AS A11 on A11.player_api_id = m.away_player_11" \
                   " WHERE League.name = 'England Premier League' " \
-                  " AND m.possession IS NOT NULL AND m.season IS NOT LIKE '2015/2016' > "  \
-                  " ORDER by date"
+                  " AND m.possession IS NOT NULL AND m.season NOT LIKE '2015/2016' ORDER BY date"
 SQL_QUERY_PLAYERS = f"SELECT * FROM Player_Attributes"
 
 PATH_DB = "../../data/database.sqlite"

@@ -9,8 +9,6 @@ from pathlib import Path
 import pandas as pd
 from metaflow import S3, IncludeFile, current
 
-from data.loaddata.DataLoader import execute_data_loader
-
 PYTHON = "3.12"
 
 PACKAGES = {
@@ -30,15 +28,15 @@ PACKAGES = {
 }
 
 class FlowMixin:
-    dataset = IncludeFile(
-        "match_stats",
-        is_text=True,
-        help=(
-            "Local copy of the match_stats dataset. This file will be included in the "
-            "flow and will be used whenever the flow is executed in development mode."
-        ),
-        default="data/preprocessed/match_stats.csv",
-    )
+    # dataset = IncludeFile(
+    #     "match_stats",
+    #     is_text=True,
+    #     help=(
+    #         "Local copy of the match_stats dataset. This file will be included in the "
+    #         "flow and will be used whenever the flow is executed in development mode."
+    #     ),
+    #     default="data/preprocessed/match_stats.csv",
+    # )
 
     def load_dataset(self):
         import numpy as np
