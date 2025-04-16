@@ -123,7 +123,7 @@ class FeaturePipeline(FlowSpec, FlowMixin):
         self.match_details["home_possession"] = self.match_details["home_possession"].clip(0, 100)
         self.match_details["away_possession"] = self.match_details["away_possession"].clip(0, 100)
 
-        self.next(self.engineer_player_features, self.calculate_point_features)
+        self.next(self.engineer_player_features, self.calculate_point_features, self.shift_values)
 
     @card
     @step
@@ -134,14 +134,14 @@ class FeaturePipeline(FlowSpec, FlowMixin):
 
         logging.info("Engineering player features...")
 
-        players_cols = ['{}_player_{}'.format(team, i) for team in ['home', 'away'] for i in range(1, 12)]
+        self.players_cols = ['{}_player_{}'.format(team, i) for team in ['home', 'away'] for i in range(1, 12)]
 
         player_stats_dict_series = self.match_details.apply(
             lambda row: player_stats_service.get_player_stat(
                 match_row=row,
                 df_matches=self.match_details,
                 df_player_attr=self.player_attributes,
-                players=players_cols
+                players=self.players_cols
             ),
             axis=1
         )
@@ -154,7 +154,6 @@ class FeaturePipeline(FlowSpec, FlowMixin):
     @step
     def calculate_point_features(self):
         """Count team points."""
-        import mlflow
         import logging
         from services import point_service
 
@@ -169,6 +168,20 @@ class FeaturePipeline(FlowSpec, FlowMixin):
 
         self.next(self.join)
 
+    @card
+    @step
+    def shift_values(self):
+        """Shift team values."""
+        import logging
+        from services import shift_data_service
+
+        logging.info("Shift team columns...")
+
+        self.shifted_df = self.raw_match_details.copy()
+        self.shifted_df = shift_data_service.process_match_data(self.shifted_df)
+
+        self.next(self.join)
+
     @step
     def join(self, inputs):
         """Join engineered features."""
@@ -177,8 +190,13 @@ class FeaturePipeline(FlowSpec, FlowMixin):
 
         points_df = next(inp.counted_points_df for inp in inputs if hasattr(inp, 'counted_points_df'))
         player_df = next(inp.new_player_stats_df for inp in inputs if hasattr(inp, 'new_player_stats_df'))
+        shifted_df = next(inp.shifted_df for inp in inputs if hasattr(inp, 'shifted_df'))
+        players_cols = next(inp.players_cols for inp in inputs if hasattr(inp, 'players_cols'))
 
         self.feature_df = pd.merge(points_df, player_df, how='left', on='match_api_id')
+        self.feature_df.drop(players_cols, axis=1, inplace=True)
+
+        self.feature_df = pd.merge(self.feature_df, shifted_df, how='left', on='match_api_id')
 
         stats = {
             "row_count": len(self.feature_df),
@@ -196,9 +214,15 @@ class FeaturePipeline(FlowSpec, FlowMixin):
     @step
     def end(self):
         """End the Feature pipeline."""
+        import os
         import mlflow
+        import logging
 
         output_path = "data/preprocessed/df.csv"
+        parent_dir = os.path.dirname(output_path)
+
+        os.makedirs(parent_dir, exist_ok=True)
+
         self.feature_df.to_csv(output_path, index=False)
         mlflow.log_artifact(output_path)
 
