@@ -130,14 +130,15 @@ class FeaturePipeline(FlowSpec, FlowMixin):
     def engineer_player_features(self):
         """Create player features."""
         import pandas as pd
-        from services import player_stats_service
+        from services.playerstatsprocessor.PlayerStatsProcessor import PlayerStatsProcessor
 
         logging.info("Engineering player features...")
+        processor = PlayerStatsProcessor()
 
         self.players_cols = ['{}_player_{}'.format(team, i) for team in ['home', 'away'] for i in range(1, 12)]
 
         player_stats_dict_series = self.match_details.apply(
-            lambda row: player_stats_service.get_player_stat(
+            lambda row: processor.get_player_statistics(
                 match_row=row,
                 df_matches=self.match_details,
                 df_player_attr=self.player_attributes,
@@ -155,13 +156,14 @@ class FeaturePipeline(FlowSpec, FlowMixin):
     def calculate_point_features(self):
         """Count team points."""
         import logging
-        from services import point_service
+        from services.pointprocessor.PointsProcessor import PointsProcessor
 
         logging.info("Counting team points...")
+        processor = PointsProcessor()
 
         self.counted_points_df = self.raw_match_details.copy()
         self.counted_points_df[['points_home', 'points_away', 'match_api_id']] = self.counted_points_df.apply(
-            lambda row: point_service.count_points(row, self.counted_points_df),
+            lambda row: processor.point_service.count_points(row, self.counted_points_df),
             axis=1,
             result_type='expand'
         )
@@ -173,12 +175,13 @@ class FeaturePipeline(FlowSpec, FlowMixin):
     def shift_values(self):
         """Shift team values."""
         import logging
-        from services import shift_data_service
+        from pipelines.services.matchdataprocessor.MatchDataProcessor import MatchDataProcessor
 
         logging.info("Shift team columns...")
 
-        self.shifted_df = self.raw_match_details.copy()
-        self.shifted_df = shift_data_service.process_match_data(self.shifted_df)
+        processor = MatchDataProcessor()
+        self.df = self.raw_match_details.copy()
+        self.lagged_df = processor.process_match_data(self.df)
 
         self.next(self.join)
 
@@ -190,13 +193,13 @@ class FeaturePipeline(FlowSpec, FlowMixin):
 
         points_df = next(inp.counted_points_df for inp in inputs if hasattr(inp, 'counted_points_df'))
         player_df = next(inp.new_player_stats_df for inp in inputs if hasattr(inp, 'new_player_stats_df'))
-        shifted_df = next(inp.shifted_df for inp in inputs if hasattr(inp, 'shifted_df'))
+        lagged_df = next(inp.lagged_df for inp in inputs if hasattr(inp, 'lagged_df'))
         players_cols = next(inp.players_cols for inp in inputs if hasattr(inp, 'players_cols'))
 
         self.feature_df = pd.merge(points_df, player_df, how='left', on='match_api_id')
         self.feature_df.drop(players_cols, axis=1, inplace=True)
 
-        self.feature_df = pd.merge(self.feature_df, shifted_df, how='left', on='match_api_id')
+        self.feature_df = pd.merge(self.feature_df, lagged_df, how='left', on='match_api_id')
 
         stats = {
             "row_count": len(self.feature_df),
