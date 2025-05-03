@@ -163,7 +163,7 @@ class FeaturePipeline(FlowSpec, FlowMixin):
 
         self.counted_points_df = self.raw_match_details.copy()
         self.counted_points_df[['points_home', 'points_away', 'match_api_id']] = self.counted_points_df.apply(
-            lambda row: processor.point_service.count_points(row, self.counted_points_df),
+            lambda row: processor.count_points(row, self.counted_points_df),
             axis=1,
             result_type='expand'
         )
@@ -175,7 +175,7 @@ class FeaturePipeline(FlowSpec, FlowMixin):
     def shift_values(self):
         """Shift team values."""
         import logging
-        from pipelines.services.matchdataprocessor.MatchDataProcessor import MatchDataProcessor
+        from services.matchdataprocessor.MatchDataProcessor import MatchDataProcessor
 
         logging.info("Shift team columns...")
 
