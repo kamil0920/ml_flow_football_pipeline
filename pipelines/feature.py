@@ -1,6 +1,8 @@
 import logging
 import os
 
+import pandas as pd
+
 from common import (
     PYTHON,
     FlowMixin,
@@ -123,24 +125,27 @@ class FeaturePipeline(FlowSpec, FlowMixin):
         self.match_details["home_possession"] = self.match_details["home_possession"].clip(0, 100)
         self.match_details["away_possession"] = self.match_details["away_possession"].clip(0, 100)
 
-        self.next(self.engineer_player_features, self.calculate_point_features, self.shift_values)
+        self.next(self.engineer_player_features,
+                  self.calculate_point_features,
+                  self.calculate_shift_features)
 
     @card
     @step
     def engineer_player_features(self):
         """Create player features."""
-        import pandas as pd
         from services.playerstatsprocessor.PlayerStatsProcessor import PlayerStatsProcessor
 
-        logging.info("Engineering player features...")
+        print("Engineering player features...")
         processor = PlayerStatsProcessor()
 
         self.players_cols = ['{}_player_{}'.format(team, i) for team in ['home', 'away'] for i in range(1, 12)]
 
-        player_stats_dict_series = self.match_details.apply(
+        df_ = self.match_details.copy()
+
+        player_stats_dict_series = df_.apply(
             lambda row: processor.get_player_statistics(
                 match_row=row,
-                df_matches=self.match_details,
+                df_matches=df_,
                 df_player_attr=self.player_attributes,
                 players=self.players_cols
             ),
@@ -148,69 +153,120 @@ class FeaturePipeline(FlowSpec, FlowMixin):
         )
 
         self.new_player_stats_df = pd.json_normalize(player_stats_dict_series)
+        #
+        # output_path = "data/preprocessed/player_stats.csv"
+        # parent_dir = os.path.dirname(output_path)
+        #
+        # os.makedirs(parent_dir, exist_ok=True)
+        #
+        # self.new_player_stats_df.to_csv(output_path, index=False)
 
-        self.next(self.join)
+        print("After calculate player stats shape %s", self.new_player_stats_df.shape)
+
+        self.next(self.calculate_team_features)
 
     @card
     @step
     def calculate_point_features(self):
         """Count team points."""
-        import logging
         from services.pointprocessor.PointsProcessor import PointsProcessor
 
-        logging.info("Counting team points...")
+        print("Counting team points...")
         processor = PointsProcessor()
 
-        self.counted_points_df = self.raw_match_details.copy()
-        self.counted_points_df[['points_home', 'points_away', 'match_api_id']] = self.counted_points_df.apply(
-            lambda row: processor.count_points(row, self.counted_points_df),
+        df_ = self.match_details.copy()
+        self.counted_points_df = pd.DataFrame()
+        self.counted_points_df[['points_home', 'points_away', 'match_api_id']] = df_.apply(
+            lambda row: processor.count_points(row, df_),
             axis=1,
             result_type='expand'
         )
+
+        print("After calculate points df shape %s", self.counted_points_df.shape)
+
+        self.next(self.calculate_team_features)
+
+    @card
+    @step
+    def calculate_shift_features(self):
+        """Shift team values."""
+        from services.matchdataprocessor.MatchDataProcessor import MatchDataProcessor
+
+        print("Shift team columns...")
+
+        processor = MatchDataProcessor()
+        self.match_details = self.match_details.copy()
+        self.lagged_df = processor.process_match_data(self.match_details)
+
+        print("After shift features df shape %s", self.lagged_df.shape)
+
+        self.next(self.calculate_team_features)
+
+    @card
+    @step
+    def calculate_team_features(self, inputs):
+        """
+        Now that we've got player_df, points_df, lagged_df, merge them,
+        run TeamFeaturesProcessor, and emit self.feature_df.
+        """
+        import pandas as pd
+        from services.teamfeaturesprocessor.TeamFeaturesProcessor import TeamFeaturesProcessor
+
+        logging.info("Merging all partial features and computing team‐level features…")
+
+        points_df = next(inp.counted_points_df for inp in inputs if hasattr(inp, 'counted_points_df'))
+        player_df = next(inp.new_player_stats_df for inp in inputs if hasattr(inp, 'new_player_stats_df'))
+        lagged_df = next(inp.lagged_df for inp in inputs if hasattr(inp, 'lagged_df'))
+        match_details_df = next(inp.match_details for inp in inputs if hasattr(inp, 'match_details'))
+
+        print(f'match_details_df: {match_details_df.shape}')
+        print(f'match_details_df: {match_details_df.columns}')
+
+        self.feature_df = pd.merge(points_df, player_df, how='left', on='match_api_id')
+        self.feature_df = pd.merge(self.feature_df, lagged_df, how='left', on='match_api_id')
+
+        print(f'feature_df: {self.feature_df.head()}')
+        print(f'feature_df shape: {self.feature_df.shape}')
+
+        base = match_details_df[['match_api_id', 'season', 'stage', 'date']]
+
+        # merge everything
+        feature_df = (
+            base
+            .merge(points_df, how='left', on='match_api_id')
+            .merge(player_df, how='left', on='match_api_id')
+            .merge(lagged_df, how='left', on='match_api_id')
+        )
+
+        processor = TeamFeaturesProcessor(feature_df, window=5)
+        self.feature_df = processor.process()
+
+        print("After calculate team features df shape %s", self.feature_df.shape)
 
         self.next(self.join)
 
     @card
     @step
-    def shift_values(self):
-        """Shift team values."""
-        import logging
-        from services.matchdataprocessor.MatchDataProcessor import MatchDataProcessor
-
-        logging.info("Shift team columns...")
-
-        processor = MatchDataProcessor()
-        self.df = self.raw_match_details.copy()
-        self.lagged_df = processor.process_match_data(self.df)
-
-        self.next(self.join)
-
-    @step
-    def join(self, inputs):
-        """Join engineered features."""
-        import pandas as pd
-        import mlflow
-
-        points_df = next(inp.counted_points_df for inp in inputs if hasattr(inp, 'counted_points_df'))
-        player_df = next(inp.new_player_stats_df for inp in inputs if hasattr(inp, 'new_player_stats_df'))
-        lagged_df = next(inp.lagged_df for inp in inputs if hasattr(inp, 'lagged_df'))
-        players_cols = next(inp.players_cols for inp in inputs if hasattr(inp, 'players_cols'))
-
-        self.feature_df = pd.merge(points_df, player_df, how='left', on='match_api_id')
-        self.feature_df.drop(players_cols, axis=1, inplace=True)
-
-        self.feature_df = pd.merge(self.feature_df, lagged_df, how='left', on='match_api_id')
+    def join(self):
+        """
+        Here we have self.feature_df fully enriched.
+        Just log a final summary & write to disk / MLflow.
+        """
+        import mlflow, logging, os
 
         stats = {
-            "row_count": len(self.feature_df),
-            "match_count": self.feature_df["match_api_id"].nunique(),
-            "missing_values": self.feature_df.isna().sum().to_dict(),
-            "duplicates_values": self.feature_df.duplicated().value_counts().tolist()
+            'rows': len(self.feature_df),
+            'matches': self.feature_df['match_api_id'].nunique(),
+            'missing': self.feature_df.isna().sum().to_dict(),
+            'duplicates': int(self.feature_df.duplicated().sum())
         }
+        mlflow.log_dict(stats, 'team_feature_summary.json')
+        print("Final feature_df shape %s", self.feature_df.shape)
 
-        mlflow.log_params({"match_data_statistics": str(stats)})
-
-        print("Join complete. Final shape:", self.feature_df.shape)
+        out_path = 'data/preprocessed/feature_df.csv'
+        os.makedirs(os.path.dirname(out_path), exist_ok=True)
+        self.feature_df.to_csv(out_path, index=False)
+        mlflow.log_artifact(out_path)
 
         self.next(self.end)
 
@@ -229,7 +285,7 @@ class FeaturePipeline(FlowSpec, FlowMixin):
         self.feature_df.to_csv(output_path, index=False)
         mlflow.log_artifact(output_path)
 
-        logging.info("Saved and logged DataFrame to MLflow as artifact.")
+        print("Saved and logged DataFrame to MLflow as artifact.")
 
     def load_match_details(self):
         """Load match details dataset."""

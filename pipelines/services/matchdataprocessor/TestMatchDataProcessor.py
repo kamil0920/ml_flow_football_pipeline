@@ -91,8 +91,8 @@ class TestMatchDataProcessor(unittest.TestCase):
         result = self.processor.process_match_data(self.match_data)
 
         self.assertIn('match_api_id', result.columns)
-        self.assertIn('home_goal_shifted', result.columns)
-        self.assertIn('away_goal_shifted', result.columns)
+        self.assertIn('home_goals_shifted', result.columns)
+        self.assertIn('away_goals_shifted', result.columns)
 
         # Check that original shape is preserved
         self.assertEqual(result.shape[0], self.match_data.shape[0])

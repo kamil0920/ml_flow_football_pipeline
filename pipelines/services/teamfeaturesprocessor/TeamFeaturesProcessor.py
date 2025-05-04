@@ -1,3 +1,5 @@
+from unittest.mock import inplace
+
 import pandas as pd
 import numpy as np
 from typing import List, Optional
@@ -37,6 +39,33 @@ def calculate_streak(results: pd.Series) -> List[int]:
             current_streak = 0
         streaks.append(current_streak)
     return streaks
+
+
+def merge_rolling(df: pd.DataFrame, stats: pd.DataFrame, location: str) -> pd.DataFrame:
+    """
+    Merges computed rolling stats back onto the main DataFrame for specified location.
+    """
+    prefix = location
+    base_cols = ['team', 'season', 'stage', 'date', 'match_api_id']
+    merge_cols = [c for c in stats.columns if c.startswith('roll_')]
+
+    merged = df.merge(
+        stats[base_cols + merge_cols],
+        left_on=['match_api_id', f'{prefix}_team'],
+        right_on=['match_api_id', 'team'],
+        how='left'
+    )
+
+    rename_map = {
+        f'roll_mean_{m}': f'rolling_avg_{m}_{prefix}' for m in ['goals_shifted', 'goals_conversion_rate', 'shots_shifted']
+    }
+    rename_map.update({
+        f'roll_std_{m}': f'rolling_stability_{m}_{prefix}' for m in ['goals_shifted', 'goals_conversion_rate', 'shots_shifted']
+    })
+    merged = merged.rename(columns=rename_map)
+
+    return merged.drop(columns=['team'])
+
 
 class TeamFeaturesProcessor:
     """
@@ -84,19 +113,22 @@ class TeamFeaturesProcessor:
                     self.df[f'avg_{feature}_home'] - self.df[f'avg_{feature}_away']
             )
 
+            self.df.drop(home_cols, axis=1, inplace=True)
+            self.df.drop(away_cols, axis=1, inplace=True)
+
     def _compute_conversion_rates(self) -> None:
         """
         Calculates goal conversion rates for home and away teams.
         """
-        self.df['goal_conversion_rate_home'] = np.where(
-            self.df['home_team_last_shoton'] > 0,
-            self.df['home_team_last_goal'] / self.df['home_team_last_shoton'],
+        self.df['goals_conversion_rate_home'] = np.where(
+            self.df['home_shots_shifted'] > 0,
+            self.df['home_goals_shifted'] / self.df['home_shots_shifted'],
             0
         )
 
-        self.df['goal_conversion_rate_away'] = np.where(
-            self.df['away_team_last_shoton'] > 0,
-            self.df['away_team_last_goal'] / self.df['away_team_last_shoton'],
+        self.df['goals_conversion_rate_away'] = np.where(
+            self.df['away_shots_shifted'] > 0,
+            self.df['away_goals_shifted'] / self.df['away_shots_shifted'],
             0
         )
 
@@ -123,7 +155,7 @@ class TeamFeaturesProcessor:
         team_frame = pd.concat([home_stats, away_stats], ignore_index=True)
         team_frame = team_frame.sort_values(by=['team'] + base_cols)
 
-        for metric in ['goals', 'goal_conversion_rate', 'last_shoton']:
+        for metric in ['goals_shifted', 'goals_conversion_rate', 'shots_shifted']:
             team_frame[f'roll_mean_{metric}'] = (
                 team_frame.groupby('team')[metric]
                 .transform(lambda x: x.ewm(span=self.window, adjust=False).mean())
@@ -133,9 +165,8 @@ class TeamFeaturesProcessor:
                 .transform(lambda x: x.ewm(span=self.window, adjust=False).std())
             )
 
-        # Merge back into main df for home and away
-        self.df = self._merge_rolling(self.df, team_frame, 'home')
-        self.df = self._merge_rolling(self.df, team_frame, 'away')
+        self.df = merge_rolling(self.df, team_frame, 'home')
+        self.df = merge_rolling(self.df, team_frame, 'away')
 
     def _prepare_team_frame(self, location: str) -> pd.DataFrame:
         """
@@ -144,38 +175,14 @@ class TeamFeaturesProcessor:
         suffix = 'home' if location == 'home' else 'away'
         cols_map = {
             f'{location}_team': 'team',
-            f'{location}_team_last_goal': 'goals',
-            f'goal_conversion_rate_{suffix}': 'goal_conversion_rate',
-            f'{location}_team_last_shoton': 'last_shoton'
+            f'{location}_goals_shifted': 'goals_shifted',
+            f'goals_conversion_rate_{suffix}': 'goals_conversion_rate',
+            f'{location}_shots_shifted': 'shots_shifted'
         }
         df_sub = self.df[cols_map.keys()].rename(columns=cols_map)
-        for key in ['season', 'stage', 'date']:
+        for key in ['season', 'stage', 'date', 'match_api_id']:
             df_sub[key] = self.df[key]
         return df_sub
-
-    def _merge_rolling(self, df: pd.DataFrame, stats: pd.DataFrame, location: str) -> pd.DataFrame:
-        """
-        Merges computed rolling stats back onto the main DataFrame for specified location.
-        """
-        prefix = location
-        base_cols = ['team', 'season', 'stage', 'date']
-        merge_cols = [c for c in stats.columns if c.startswith('roll_')]
-
-        merged = df.merge(
-            stats[base_cols + merge_cols],
-            left_on=[f'{location}_team', 'season', 'stage', 'date'],
-            right_on=base_cols,
-            how='left'
-        )
-        
-        rename_map = {
-            f'roll_mean_{m}': f'rolling_avg_{m}_{prefix}' for m in ['goals', 'goal_conversion_rate', 'last_shoton']
-        }
-        rename_map.update({
-            f'roll_std_{m}': f'rolling_stability_{m}_{prefix}' for m in ['goals', 'goal_conversion_rate', 'last_shoton']
-        })
-        merged = merged.rename(columns=rename_map)
-        return merged.drop(columns=['team'])
 
     def _drop_intermediate_columns(self) -> None:
         """
@@ -187,12 +194,12 @@ class TeamFeaturesProcessor:
 
     def _compute_shot_efficiency(self) -> None:
         self.df['shot_efficiency_ratio_home'] = (
-                self.df['rolling_stability_goals_home'] /
-                (self.df['rolling_stability_last_shoton_home'] + 1e-5)
+                self.df['rolling_stability_goals_shifted_home'] /
+                (self.df['rolling_stability_shots_shifted_home'] + 1e-5)
         )
         self.df['shot_efficiency_ratio_away'] = (
-                self.df['rolling_stability_goals_away'] /
-                (self.df['rolling_stability_last_shoton_away'] + 1e-5)
+                self.df['rolling_stability_goals_shifted_away'] /
+                (self.df['rolling_stability_shots_shifted_away'] + 1e-5)
         )
 
     def _compute_temporal_context(self) -> None:
@@ -201,12 +208,10 @@ class TeamFeaturesProcessor:
         self.df['is_weekend'] = self.df['day_of_week'].isin(['Saturday', 'Sunday'])
 
     def _compute_rest_periods(self) -> None:
-        # Rest for home
         self.df.sort_values(['home_team', 'date'], inplace=True)
         self.df['rest_period_home'] = (
             self.df.groupby('home_team')['date'].diff().dt.days
         )
-        # Rest for away
         self.df.sort_values(['away_team', 'date'], inplace=True)
         self.df['rest_period_away'] = (
             self.df.groupby('away_team')['date'].diff().dt.days
@@ -227,7 +232,6 @@ class TeamFeaturesProcessor:
             .transform(lambda s: calculate_slope(s, window=self.window))
             .shift(1)
         )
-        # Streaks
         self.df.sort_values(['home_team', 'date'], inplace=True)
         self.df['streak_home'] = (
             self.df.groupby('home_team')['result_match']

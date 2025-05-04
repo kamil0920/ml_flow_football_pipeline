@@ -19,10 +19,10 @@ class MatchDataProcessor:
         self.default_features_to_lag = ['team_goal', 'team_shoton', 'team_possession']
         self.default_columns_to_drop = ['team_goal', 'team_shoton', 'team_possession']
         self.default_feature_mapping = {
-            'home_team_goal_lag1': 'home_goal_shifted',
+            'home_team_goal_lag1': 'home_goals_shifted',
             'home_team_shoton_lag1': 'home_shots_shifted',
             'home_team_possession_lag1': 'home_possession_shifted',
-            'away_team_goal_lag1': 'away_goal_shifted',
+            'away_team_goal_lag1': 'away_goals_shifted',
             'away_team_shoton_lag1': 'away_shots_shifted',
             'away_team_possession_lag1': 'away_possession_shifted',
         }
@@ -254,7 +254,7 @@ class MatchDataProcessor:
             suffixes=('', f'_{side}')
         )
 
-        return result_df
+        return result_df.drop(['team'], axis=1)
 
     def cleanup_feature_names(
             self,
@@ -315,7 +315,7 @@ class MatchDataProcessor:
 
     def process_match_data(
             self,
-            df: pd.DataFrame,
+            data: pd.DataFrame,
             features_to_lag: Optional[List[str]] = None,
             window_size: int = None,
             rename_mapping: Optional[Dict[str, str]] = None,
@@ -329,7 +329,7 @@ class MatchDataProcessor:
         and calculating lagged performance metrics.
 
         Args:
-            df: DataFrame with match data
+            data: DataFrame with match data
             features_to_lag: List of features to create lagged versions of
             window_size: Size of rolling window
             rename_mapping: Mapping of old to new feature names
@@ -341,6 +341,7 @@ class MatchDataProcessor:
         Raises:
             Exception: If any error occurs during processing
         """
+        df = data.copy()
         if features_to_lag is None:
             features_to_lag = self.default_features_to_lag
 

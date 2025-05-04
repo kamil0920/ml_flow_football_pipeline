@@ -21,3 +21,5 @@ metaflow-card-html
 
 azure-ai-ml
 azureml-mlflow
+
+jupyter

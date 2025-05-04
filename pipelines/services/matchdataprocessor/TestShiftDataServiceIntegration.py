@@ -29,10 +29,10 @@ class TestShiftDataServiceIntegration(unittest.TestCase):
 
         expected_columns = [
             'match_api_id',
-            'home_goal_shifted',
+            'home_goals_shifted',
             'home_shots_shifted',
             'home_possession_shifted',
-            'away_goal_shifted',
+            'away_goals_shifted',
             'away_shots_shifted',
             'away_possession_shifted'
         ]
