@@ -51,8 +51,8 @@ def merge_rolling(df: pd.DataFrame, stats: pd.DataFrame, location: str) -> pd.Da
 
     merged = df.merge(
         stats[base_cols + merge_cols],
-        left_on=['match_api_id', f'{prefix}_team'],
-        right_on=['match_api_id', 'team'],
+        left_on=['match_api_id', f'{prefix}_team','season', 'stage', 'date'],
+        right_on=['match_api_id', 'team','season', 'stage', 'date'],
         how='left'
     )
 

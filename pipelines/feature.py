@@ -153,15 +153,8 @@ class FeaturePipeline(FlowSpec, FlowMixin):
         )
 
         self.new_player_stats_df = pd.json_normalize(player_stats_dict_series)
-        #
-        # output_path = "data/preprocessed/player_stats.csv"
-        # parent_dir = os.path.dirname(output_path)
-        #
-        # os.makedirs(parent_dir, exist_ok=True)
-        #
-        # self.new_player_stats_df.to_csv(output_path, index=False)
 
-        print("After calculate player stats shape %s", self.new_player_stats_df.shape)
+        print("After calculate player stats shape ", self.new_player_stats_df.shape)
 
         self.next(self.calculate_team_features)
 
@@ -182,7 +175,7 @@ class FeaturePipeline(FlowSpec, FlowMixin):
             result_type='expand'
         )
 
-        print("After calculate points df shape %s", self.counted_points_df.shape)
+        print("After calculate points df shape ", self.counted_points_df.shape)
 
         self.next(self.calculate_team_features)
 
@@ -198,7 +191,7 @@ class FeaturePipeline(FlowSpec, FlowMixin):
         self.match_details = self.match_details.copy()
         self.lagged_df = processor.process_match_data(self.match_details)
 
-        print("After shift features df shape %s", self.lagged_df.shape)
+        print("After shift features df shape ", self.lagged_df.shape)
 
         self.next(self.calculate_team_features)
 
@@ -219,18 +212,11 @@ class FeaturePipeline(FlowSpec, FlowMixin):
         lagged_df = next(inp.lagged_df for inp in inputs if hasattr(inp, 'lagged_df'))
         match_details_df = next(inp.match_details for inp in inputs if hasattr(inp, 'match_details'))
 
-        print(f'match_details_df: {match_details_df.shape}')
-        print(f'match_details_df: {match_details_df.columns}')
-
         self.feature_df = pd.merge(points_df, player_df, how='left', on='match_api_id')
         self.feature_df = pd.merge(self.feature_df, lagged_df, how='left', on='match_api_id')
 
-        print(f'feature_df: {self.feature_df.head()}')
-        print(f'feature_df shape: {self.feature_df.shape}')
+        base = match_details_df[['match_api_id', 'season', 'stage', 'date', 'away_team', 'home_team', 'home_team_goal', 'away_team_goal', 'result_match']]
 
-        base = match_details_df[['match_api_id', 'season', 'stage', 'date']]
-
-        # merge everything
         feature_df = (
             base
             .merge(points_df, how='left', on='match_api_id')
@@ -241,7 +227,7 @@ class FeaturePipeline(FlowSpec, FlowMixin):
         processor = TeamFeaturesProcessor(feature_df, window=5)
         self.feature_df = processor.process()
 
-        print("After calculate team features df shape %s", self.feature_df.shape)
+        print("After calculate team features df shape ", self.feature_df.shape)
 
         self.next(self.join)
 
@@ -252,7 +238,7 @@ class FeaturePipeline(FlowSpec, FlowMixin):
         Here we have self.feature_df fully enriched.
         Just log a final summary & write to disk / MLflow.
         """
-        import mlflow, logging, os
+        import mlflow, os
 
         stats = {
             'rows': len(self.feature_df),
@@ -261,7 +247,7 @@ class FeaturePipeline(FlowSpec, FlowMixin):
             'duplicates': int(self.feature_df.duplicated().sum())
         }
         mlflow.log_dict(stats, 'team_feature_summary.json')
-        print("Final feature_df shape %s", self.feature_df.shape)
+        print("Final feature_df shape ", self.feature_df.shape)
 
         out_path = 'data/preprocessed/feature_df.csv'
         os.makedirs(os.path.dirname(out_path), exist_ok=True)
