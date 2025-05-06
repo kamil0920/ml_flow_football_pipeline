@@ -63,8 +63,7 @@ class FeaturePipeline(FlowSpec, FlowMixin):
         self.mode = "production" if current.is_production else "development"
         logging.info("Running flow in %s mode.", self.mode)
 
-        self.raw_match_details = self.load_match_details()
-        self.raw_player_attributes = self.load_player_attributes()
+        self.raw_match_details, self.raw_player_attributes = self.load_raw_match_details_dataset()
 
         try:
             run = mlflow.start_run(run_name=current.run_id)
@@ -263,7 +262,7 @@ class FeaturePipeline(FlowSpec, FlowMixin):
         import mlflow
         import logging
 
-        output_path = "data/preprocessed/df.csv"
+        output_path = "data/preprocessed/train_data.csv"
         parent_dir = os.path.dirname(output_path)
 
         os.makedirs(parent_dir, exist_ok=True)
@@ -272,17 +271,6 @@ class FeaturePipeline(FlowSpec, FlowMixin):
         mlflow.log_artifact(output_path)
 
         print("Saved and logged DataFrame to MLflow as artifact.")
-
-    def load_match_details(self):
-        """Load match details dataset."""
-        import pandas as pd
-        return pd.read_csv('data/raw/match_details.csv')
-
-    def load_player_attributes(self):
-        """Load player attributes dataset."""
-        import pandas as pd
-        return pd.read_csv('data/raw/player_attributes.csv')
-
 
 if __name__ == "__main__":
     FeaturePipeline()

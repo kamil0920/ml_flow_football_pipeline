@@ -7,9 +7,9 @@ from io import StringIO
 from pathlib import Path
 
 import pandas as pd
-from metaflow import S3, IncludeFile, current
+from metaflow import S3, Parameter, current
 
-PYTHON = "3.12"
+default_py = "3.12"
 
 PACKAGES = {
     "scikit-learn": "1.5.2",
@@ -17,58 +17,20 @@ PACKAGES = {
     "numpy": "2.1.1",
     "xgboost": "3.0.0",
     "boto3": "1.35.32",
-    "packaging": "24.1",
     "mlflow": "2.17.1",
-    "setuptools": "75.1.0",
-    "requests": "2.32.3",
-    "evidently": "0.4.33",
-    "azure-ai-ml": "1.19.0",
-    "azureml-mlflow": "1.57.0.post1",
     "python-dotenv": "1.0.1",
 }
 
-class FlowMixin:
-    # dataset = IncludeFile(
-    #     "match_stats",
-    #     is_text=True,
-    #     help=(
-    #         "Local copy of the match_stats dataset. This file will be included in the "
-    #         "flow and will be used whenever the flow is executed in development mode."
-    #     ),
-    #     default="data/preprocessed/match_stats.csv",
-    # )
-
-    def load_dataset(self):
-        import numpy as np
-
-        if current.is_production:
-            dataset = os.environ.get("DATASET", self.dataset)
-
-            with S3(s3root=dataset) as s3:
-                files = s3.get_all()
-
-                logging.info("Found %d file(s) in remote location", len(files))
-
-                raw_data = [pd.read_csv(StringIO(file.text)) for file in files]
-                data = pd.concat(raw_data)
-        else:
-            data = pd.read_csv(StringIO(self.dataset))
-
-
-        seed = int(time.time() * 1000) if current.is_production else 42
-        generator = np.random.default_rng(seed=seed)
-        data = data.sample(frac=1, random_state=generator)
-
-        logging.info("Loaded dataset with %d samples", len(data))
-
-        return data
+PYTHON = default_py
 
 
 def packages(*names: str):
+    """Helper to pick only required packages and their pinned versions."""
     return {name: PACKAGES[name] for name in names if name in PACKAGES}
 
 
 def configure_logging():
+    """Set up basic logging or from file if present."""
     if Path("logging.conf").exists():
         logging.config.fileConfig("logging.conf")
     else:
@@ -78,17 +40,119 @@ def configure_logging():
             level=logging.INFO,
         )
 
-def build_model(learning_rate=0.01, scale_pos_weight=None):
-    from xgboost import XGBClassifier
 
-    model = XGBClassifier(
-        learning_rate=learning_rate,
-        n_estimators=100,
-        max_depth=6,
-        objective='binary:logistic',
-        use_label_encoder=False,
-        eval_metric=['logloss', 'aucpr'],
-        scale_pos_weight=scale_pos_weight
+class FlowMixin:
+    """Shared code for loading datasets in dev vs prod."""
+    # Include local CSV in development; override via DATASET env in production
+
+    match_details_dataset = Parameter(
+        "match-details-dataset",
+        help="Local copy of the match_stats dataset. This file will be included in the "
+             "flow and will be used whenever the flow is executed in development mode."
+        ,
+        default="data/raw/match_details.csv",
+    )
+    players_stats_dataset = Parameter(
+        "players-stats-dataset",
+        help="Local copy of the match_stats dataset. This file will be included in the "
+             "flow and will be used whenever the flow is executed in development mode."
+        ,
+        default="data/raw/player_attributes.csv",
     )
 
-    return model
+    def load_raw_match_details_dataset(self):
+        import numpy as np
+
+        if current.is_production:
+            match_details_s3_root = os.environ.get("MATCH_DATASET", None)
+            player_stats_s3_root = os.environ.get("PLAYER_DATASET", None)
+            with S3(s3root=match_details_s3_root) as s3:
+                files = s3.get_all()
+                logging.info("Found %d remote file(s)", len(files))
+                frames = [pd.read_csv(StringIO(f.text)) for f in files]
+                match_data = pd.concat(frames, ignore_index=True)
+            with S3(s3root=player_stats_s3_root) as s3:
+                files = s3.get_all()
+                logging.info("Found %d remote file(s)", len(files))
+                frames = [pd.read_csv(StringIO(f.text)) for f in files]
+                player_data = pd.concat(frames, ignore_index=True)
+        else:
+            match_data = pd.read_csv(self.match_details_dataset)
+            player_data = pd.read_csv(self.players_stats_dataset)
+
+        seed = int(time.time() * 1000) if current.is_production else 42
+        rng = np.random.default_rng(seed)
+        match_data = match_data.sample(frac=1, random_state=rng).reset_index(drop=True)
+        player_data = player_data.sample(frac=1, random_state=rng).reset_index(drop=True)
+
+        logging.info("Loaded match details dataset with %d rows", len(match_data))
+        logging.info("Loaded player stats dataset with %d rows", len(player_data))
+        return match_data, player_data
+
+    train_data_path = Parameter(
+        "train-data",
+        help="Local path or S3 prefix for your preprocessed train_data.csv",
+        default="data/preprocessed/train_data.csv",
+    )
+
+    def load_train_dataset(self):
+        import numpy as np
+
+        if current.is_production:
+            s3_root = os.environ.get("DATASET", None)
+            with S3(s3root=s3_root) as s3:
+                files = s3.get_all()
+                logging.info("Found %d remote file(s)", len(files))
+                frames = [pd.read_csv(StringIO(f.text)) for f in files]
+                data = pd.concat(frames, ignore_index=True)
+        else:
+            data = pd.read_csv(StringIO(self.train_data_path))
+
+        seed = int(time.time() * 1000) if current.is_production else 42
+        rng = np.random.default_rng(seed)
+        data = data.sample(frac=1, random_state=rng).reset_index(drop=True)
+
+        logging.info("Loaded dataset with %d rows", len(data))
+        return data
+
+
+def build_target_transformer():
+    """Ordinal-encode species labels for XGBoost training."""
+    from sklearn.preprocessing import OrdinalEncoder
+    from sklearn.pipeline import make_pipeline
+
+    return make_pipeline(
+        OrdinalEncoder(),
+    )
+
+
+def build_features_transformer():
+    """Preprocess numeric and categorical features."""
+    from sklearn.compose import ColumnTransformer, make_column_selector
+    from sklearn.impute import SimpleImputer
+    from sklearn.pipeline import make_pipeline
+    from sklearn.preprocessing import OneHotEncoder, StandardScaler
+
+    numeric_pipe = make_pipeline(
+        SimpleImputer(strategy="mean"),
+        StandardScaler()
+    )
+    categorical_pipe = make_pipeline(
+        SimpleImputer(strategy="most_frequent"),
+        OneHotEncoder(handle_unknown="ignore")
+    )
+    return ColumnTransformer([
+        ("num", numeric_pipe, make_column_selector(dtype_exclude="object")),
+        ("cat", categorical_pipe, ["island", "sex"]),
+    ])
+
+
+def build_model(**xgb_params):
+    """Instantiate an XGBClassifier with provided hyperparameters."""
+    from xgboost import XGBClassifier
+
+    return XGBClassifier(
+        **xgb_params,
+        use_label_encoder=False,
+        eval_metric=["logloss", "aucpr"],
+    )
