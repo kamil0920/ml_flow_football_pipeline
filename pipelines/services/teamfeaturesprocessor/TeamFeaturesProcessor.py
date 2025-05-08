@@ -2,7 +2,7 @@ from unittest.mock import inplace
 
 import pandas as pd
 import numpy as np
-from typing import List, Optional
+from typing import List, Optional, Any
 from sklearn.linear_model import LinearRegression
 
 
@@ -27,18 +27,48 @@ def calculate_slope(series: pd.Series, window: int = 5) -> List[float]:
     return slopes
 
 
-def calculate_streak(results: pd.Series) -> List[int]:
+def calculate_overall_streak_long_format(df: pd.DataFrame) -> tuple[Any, Any]:
+    home_df = df[['match_api_id', 'date', 'home_team', 'result_match']].copy()
+    home_df.rename(columns={'home_team': 'team'}, inplace=True)
+    home_df['is_home'] = True
+
+    away_df = df[['match_api_id', 'date', 'away_team', 'result_match']].copy()
+    away_df.rename(columns={'away_team': 'team'}, inplace=True)
+    away_df['is_home'] = False
+
+    long_df = pd.concat([home_df, away_df], ignore_index=True)
+
+    def is_win(row):
+        if row['is_home'] and row['result_match'] == 'H':
+            return 1
+        elif not row['is_home'] and row['result_match'] == 'A':
+            return 1
+        else:
+            return 0
+
+    long_df['win'] = long_df.apply(is_win, axis=1)
+
+    long_df.sort_values(['team', 'date'], inplace=True)
+
     streaks = []
     current_streak = 0
-    for res in results:
-        if res == 1:
-            current_streak = current_streak + 1 if current_streak >= 0 else 1
-        elif res == 0:
-            current_streak = current_streak - 1 if current_streak <= 0 else -1
+    prev_team = None
+    for _, row in long_df.iterrows():
+        if row['team'] != prev_team:
+            current_streak = 0
+            prev_team = row['team']
+        streaks.append(current_streak)
+        if row['win'] == 1:
+            current_streak += 1
         else:
             current_streak = 0
-        streaks.append(current_streak)
-    return streaks
+
+    long_df['streak'] = streaks
+
+    home_streaks = long_df[long_df['is_home']][['match_api_id', 'streak']].set_index('match_api_id')
+    away_streaks = long_df[~long_df['is_home']][['match_api_id', 'streak']].set_index('match_api_id')
+
+    return home_streaks, away_streaks
 
 
 def merge_rolling(df: pd.DataFrame, stats: pd.DataFrame, location: str) -> pd.DataFrame:
@@ -97,6 +127,10 @@ class TeamFeaturesProcessor:
         self._compute_temporal_context()
         self._compute_rest_periods()
         self._compute_momentum_and_streaks()
+        print(f'after methods before return:')
+        print(f'streaks home: {self.df['streak_home']}')
+        print('-------------------------------------')
+        print(f'streaks home: {self.df['streak_away']}')
         return self.df
 
     def _compute_basic_team_averages(self) -> None:
@@ -219,7 +253,6 @@ class TeamFeaturesProcessor:
 
 
     def _compute_momentum_and_streaks(self) -> None:
-        # Momentum
         self.df.sort_values(['home_team', 'date'], inplace=True)
         self.df['momentum_home'] = (
             self.df.groupby('home_team')['points_home']
@@ -233,14 +266,8 @@ class TeamFeaturesProcessor:
             .shift(1)
         )
         self.df.sort_values(['home_team', 'date'], inplace=True)
-        self.df['streak_home'] = (
-            self.df.groupby('home_team')['result_match']
-            .transform(calculate_streak)
-            .shift(1)
-        )
-        self.df.sort_values(['away_team', 'date'], inplace=True)
-        self.df['streak_away'] = (
-            self.df.groupby('away_team')['result_match']
-            .transform(calculate_streak)
-            .shift(1)
-        )
+
+        home_streaks, away_streaks = calculate_overall_streak_long_format(self.df)
+
+        self.df['streak_home'] = self.df['match_api_id'].map(home_streaks['streak'])
+        self.df['streak_away'] = self.df['match_api_id'].map(away_streaks['streak'])

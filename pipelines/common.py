@@ -6,8 +6,11 @@ import time
 from io import StringIO
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 from metaflow import S3, Parameter, current
+from sklearn.base import TransformerMixin, BaseEstimator
+from sklearn.ensemble import IsolationForest
 
 default_py = "3.12"
 
@@ -43,8 +46,6 @@ def configure_logging():
 
 class FlowMixin:
     """Shared code for loading datasets in dev vs prod."""
-    # Include local CSV in development; override via DATASET env in production
-
     match_details_dataset = Parameter(
         "match-details-dataset",
         help="Local copy of the match_stats dataset. This file will be included in the "
@@ -54,7 +55,7 @@ class FlowMixin:
     )
     players_stats_dataset = Parameter(
         "players-stats-dataset",
-        help="Local copy of the match_stats dataset. This file will be included in the "
+        help="Local copy of the players_stats_dataset dataset. This file will be included in the "
              "flow and will be used whenever the flow is executed in development mode."
         ,
         default="data/raw/player_attributes.csv",
@@ -115,15 +116,44 @@ class FlowMixin:
         logging.info("Loaded dataset with %d rows", len(data))
         return data
 
+class OutlierHandler(BaseEstimator, TransformerMixin):
+    """Detects outliers with IsolationForest and masks them to NaN."""
+    def __init__(self, contamination=0.05, random_state=42):
+        self.contamination = contamination
+        self.random_state = random_state
+
+    def fit(self, X, y=None):
+        self.iforest_ = IsolationForest(
+            contamination=self.contamination,
+            random_state=self.random_state,
+        )
+        self.iforest_.fit(X)
+        return self
+
+    def transform(self, X):
+        X = pd.DataFrame(X, columns=getattr(self, 'feature_names_in_', None) or range(X.shape[1]))
+        mask = self.iforest_.predict(X) == 1
+        X_clean = X.where(mask, np.nan)
+        return X_clean.values
 
 def build_target_transformer():
-    """Ordinal-encode species labels for XGBoost training."""
-    from sklearn.preprocessing import OrdinalEncoder
-    from sklearn.pipeline import make_pipeline
+    from sklearn.pipeline import Pipeline
+    from sklearn.preprocessing import FunctionTransformer
 
-    return make_pipeline(
-        OrdinalEncoder(),
-    )
+    """
+    Returns a 1-step pipeline that maps result_match 'H'→1, others→0.
+    """
+    def map_result(df: pd.DataFrame) -> pd.DataFrame:
+        print(f'before: {df.result_match.value_counts()}')
+        frame = (df['result_match'] == 'H').astype(int).to_frame()
+
+        print(f'after: {frame.result_match.value_counts()}')
+
+        return frame
+
+    return Pipeline([
+        ('map_result', FunctionTransformer(map_result, validate=False))
+    ])
 
 
 def build_features_transformer():
@@ -131,11 +161,12 @@ def build_features_transformer():
     from sklearn.compose import ColumnTransformer, make_column_selector
     from sklearn.impute import SimpleImputer
     from sklearn.pipeline import make_pipeline
-    from sklearn.preprocessing import OneHotEncoder, StandardScaler
+    from sklearn.preprocessing import OneHotEncoder
 
     numeric_pipe = make_pipeline(
         SimpleImputer(strategy="mean"),
-        StandardScaler()
+        OutlierHandler(contamination=0.05),
+        SimpleImputer(strategy="median"),
     )
     categorical_pipe = make_pipeline(
         SimpleImputer(strategy="most_frequent"),
@@ -143,7 +174,7 @@ def build_features_transformer():
     )
     return ColumnTransformer([
         ("num", numeric_pipe, make_column_selector(dtype_exclude="object")),
-        ("cat", categorical_pipe, ["island", "sex"]),
+        ("cat", categorical_pipe, ["seasonal_context", "day_of_week", "is_weekend"]),
     ])
 
 

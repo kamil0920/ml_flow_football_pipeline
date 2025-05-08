@@ -8,6 +8,7 @@ from common import (
     FlowMixin,
     configure_logging,
     packages,
+    build_target_transformer
 )
 
 from metaflow import (
@@ -223,8 +224,17 @@ class FeaturePipeline(FlowSpec, FlowMixin):
             .merge(lagged_df, how='left', on='match_api_id')
         )
 
+        # target_transformer = build_target_transformer()
+        # feature_df['result_match'] = target_transformer.fit_transform(feature_df)
+
+        print(f'pipline: {feature_df.result_match.value_counts()}')
+
         processor = TeamFeaturesProcessor(feature_df, window=5)
         self.feature_df = processor.process()
+
+        print(f'streaks home: {self.feature_df['streak_home']}')
+        print('-------------------------------------')
+        print(f'streaks home: {self.feature_df['streak_away']}')
 
         print("After calculate team features df shape ", self.feature_df.shape)
 
