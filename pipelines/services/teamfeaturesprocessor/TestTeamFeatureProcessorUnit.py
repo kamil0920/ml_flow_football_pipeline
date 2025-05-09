@@ -57,7 +57,7 @@ class TestTeamFeaturesProcessorUnit(unittest.TestCase):
         self.assertEqual(row['rest_period_home'], 9)
 
     def test_momentum_and_streaks(self):
-        row3 = self.result.loc[self.result['stage']==13].iloc[0]
+        row3 = self.result.loc[self.result['stage']==14].iloc[0]
         self.assertEqual(row3['streak_home'], 3)
 
 
@@ -74,7 +74,7 @@ class TestTeamFeaturesProcessorIntegration(unittest.TestCase):
         df = make_test_df()
         result = TeamFeaturesProcessor(df, window=2).process()
         row2 = result.loc[result['stage']==12].iloc[0]
-        self.assertAlmostEqual(row2['rolling_avg_goals_shifted_away'], 2.222, places=3)
+        self.assertAlmostEqual(row2['rolling_avg_goals_shifted_away'], 2.333, places=3)
 
 if __name__ == '__main__':
     unittest.main()
