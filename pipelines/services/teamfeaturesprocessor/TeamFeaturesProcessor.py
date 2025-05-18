@@ -127,10 +127,6 @@ class TeamFeaturesProcessor:
         self._compute_temporal_context()
         self._compute_rest_periods()
         self._compute_momentum_and_streaks()
-        print(f'after methods before return:')
-        print(f'streaks home: {self.df['streak_home']}')
-        print('-------------------------------------')
-        print(f'streaks home: {self.df['streak_away']}')
         return self.df
 
     def _compute_basic_team_averages(self) -> None:

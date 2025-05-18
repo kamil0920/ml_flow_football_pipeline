@@ -107,7 +107,7 @@ class FlowMixin:
                 frames = [pd.read_csv(StringIO(f.text)) for f in files]
                 data = pd.concat(frames, ignore_index=True)
         else:
-            data = pd.read_csv(StringIO(self.train_data_path))
+            data = pd.read_csv(self.train_data_path)
 
         seed = int(time.time() * 1000) if current.is_production else 42
         rng = np.random.default_rng(seed)
@@ -117,24 +117,31 @@ class FlowMixin:
         return data
 
 class OutlierHandler(BaseEstimator, TransformerMixin):
-    """Detects outliers with IsolationForest and masks them to NaN."""
-    def __init__(self, contamination=0.05, random_state=42):
-        self.contamination = contamination
-        self.random_state = random_state
+    """
+    Detects outliers using the IQR method and masks them to NaN.
+    """
+    def __init__(self, iqr_multiplier=1.5):
+        self.iqr_multiplier = iqr_multiplier
 
     def fit(self, X, y=None):
-        self.iforest_ = IsolationForest(
-            contamination=self.contamination,
-            random_state=self.random_state,
-        )
-        self.iforest_.fit(X)
+        X = pd.DataFrame(X, columns=getattr(self, 'feature_names_in_', None) or range(X.shape[1]))
+        self.q1_ = X.quantile(0.1)
+        self.q3_ = X.quantile(0.9)
+        self.iqr_ = self.q3_ - self.q1_
+
+        self.lower_bound_ = self.q1_ - self.iqr_multiplier * self.iqr_
+        self.upper_bound_ = self.q3_ + self.iqr_multiplier * self.iqr_
         return self
 
     def transform(self, X):
         X = pd.DataFrame(X, columns=getattr(self, 'feature_names_in_', None) or range(X.shape[1]))
-        mask = self.iforest_.predict(X) == 1
+        mask = (X >= self.lower_bound_) & (X <= self.upper_bound_)
         X_clean = X.where(mask, np.nan)
         return X_clean.values
+
+def map_result(df: pd.DataFrame) -> pd.DataFrame:
+    frame = (df == 'H').astype(int)
+    return frame
 
 def build_target_transformer():
     from sklearn.pipeline import Pipeline
@@ -143,14 +150,6 @@ def build_target_transformer():
     """
     Returns a 1-step pipeline that maps result_match 'H'→1, others→0.
     """
-    def map_result(df: pd.DataFrame) -> pd.DataFrame:
-        print(f'before: {df.result_match.value_counts()}')
-        frame = (df['result_match'] == 'H').astype(int).to_frame()
-
-        print(f'after: {frame.result_match.value_counts()}')
-
-        return frame
-
     return Pipeline([
         ('map_result', FunctionTransformer(map_result, validate=False))
     ])
@@ -164,8 +163,7 @@ def build_features_transformer():
     from sklearn.preprocessing import OneHotEncoder
 
     numeric_pipe = make_pipeline(
-        SimpleImputer(strategy="mean"),
-        OutlierHandler(contamination=0.05),
+        OutlierHandler(),
         SimpleImputer(strategy="median"),
     )
     categorical_pipe = make_pipeline(

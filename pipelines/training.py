@@ -1,9 +1,8 @@
 import logging
 import os
-from pathlib import Path
 
-import pandas as pd
 import mlflow
+
 from common import (
     PYTHON,
     FlowMixin,
@@ -12,7 +11,7 @@ from common import (
     configure_logging,
     packages,
 )
-from inference import Model
+
 from metaflow import (
     FlowSpec,
     Parameter,
@@ -28,7 +27,7 @@ from metaflow import (
 configure_logging()
 
 
-@project(name="penguins")
+@project(name="football")
 @pypi_base(
     python=PYTHON,
     packages=packages(
@@ -44,7 +43,6 @@ configure_logging()
 class Training(FlowSpec, FlowMixin):
     """Training pipeline using XGBoost for match result classification."""
 
-    # XGBoost hyperparameters
     n_estimators = Parameter(
         "n-estimators", default=100,
         help="Number of trees in the XGBoost ensemble"
@@ -61,9 +59,9 @@ class Training(FlowSpec, FlowMixin):
         "subsample", default=0.8,
         help="Subsample ratio of the training instances"
     )
-    accuracy_threshold = Parameter(
-        "accuracy-threshold", default=0.7,
-        help="Minimum CV accuracy to register model"
+    f1_threshold = Parameter(
+        "f1-threshold", default=0.65,
+        help="Minimum CV f1 to register model"
     )
 
     @card
@@ -77,19 +75,16 @@ class Training(FlowSpec, FlowMixin):
     @step
     def start(self):
         """Initialize MLflow, load data, and set params."""
-        self.mlflow_tracking_uri = os.getenv("MLFLOW_TRACKING_URI")
+        self.mlflow_tracking_uri = os.getenv("MLFLOW_TRACKING_URI", "http://127.0.0.1:5000")
         mlflow.set_tracking_uri(self.mlflow_tracking_uri)
         self.mode = "production" if current.is_production else "development"
         logging.info("Running in %s mode", self.mode)
 
-        # load dataset
-        self.data = self.load_dataset()
+        self.data = self.load_train_dataset()
 
-        # start MLflow run
         run = mlflow.start_run(run_name=current.run_id)
         self.mlflow_run_id = run.info.run_id
 
-        # collect XGB params
         self.xgb_params = {
             'n_estimators': self.n_estimators,
             'max_depth': self.max_depth,
@@ -100,13 +95,14 @@ class Training(FlowSpec, FlowMixin):
         }
         mlflow.log_params(self.xgb_params)
 
-        # parallel: cv and full-train
         self.next(self.cross_validation, self.transform)
 
     @step
     def cross_validation(self):
         """Prepare 5-fold splits."""
         from sklearn.model_selection import KFold
+        self.mlflow_tracking_uri = getattr(self, "mlflow_tracking_uri", "http://127.0.0.1:5000")
+        self.mlflow_run_id = getattr(self, "mlflow_run_id", None)
         kf = KFold(n_splits=5, shuffle=True, random_state=42)
         self.folds = list(enumerate(kf.split(self.data)))
         self.next(self.transform_fold, foreach='folds')
@@ -114,17 +110,22 @@ class Training(FlowSpec, FlowMixin):
     @step
     def transform_fold(self):
         """Apply transformers on train/test split."""
+        self.mlflow_tracking_uri = getattr(self, "mlflow_tracking_uri", "http://127.0.0.1:5000")
+        self.mlflow_run_id = getattr(self, "mlflow_run_id", None)
         self.fold, (train_idx, test_idx) = self.input
         df = self.data
-        y = df['species'].values
 
-        # target
+        y = df['result_match'].values
+        df.drop('result_match', axis=1, inplace=True)
+
+        y_train_reshape = y[train_idx].reshape(-1, 1)
+        y_test_reshape = y[test_idx].reshape(-1,1)
+
         tgt = build_target_transformer()
-        self.y_train = tgt.fit_transform(y[train_idx].reshape(-1,1)).ravel()
-        self.y_test = tgt.transform(y[test_idx].reshape(-1,1)).ravel()
+        self.y_train = tgt.fit_transform(y_train_reshape).ravel()
+        self.y_test = tgt.transform(y_test_reshape).ravel()
         self.target_transformer = tgt
 
-        # features
         feat = build_features_transformer()
         self.x_train = feat.fit_transform(df.iloc[train_idx])
         self.x_test = feat.transform(df.iloc[test_idx])
@@ -152,16 +153,19 @@ class Training(FlowSpec, FlowMixin):
     @step
     def evaluate_fold(self):
         """Evaluate on test split."""
-        from sklearn.metrics import accuracy_score, log_loss
+        from sklearn.metrics import f1_score, log_loss
+        self.mlflow_tracking_uri = getattr(self, "mlflow_tracking_uri", "http://127.0.0.1:5000")
+        self.mlflow_run_id = getattr(self, "mlflow_run_id", None)
+        self.run_id = getattr(self, "run_id", None)
         preds = self.model.predict(self.x_test)
         proba = self.model.predict_proba(self.x_test)
-        self.accuracy = accuracy_score(self.y_test, preds)
+        self.f1_score = f1_score(self.y_test, preds)
         self.logloss = log_loss(self.y_test, proba)
 
         mlflow.set_tracking_uri(self.mlflow_tracking_uri)
         mlflow.start_run(run_id=self.run_id)
         mlflow.log_metrics({
-            'accuracy': self.accuracy,
+            'f1_score': self.f1_score,
             'log_loss': self.logloss
         })
         self.next(self.evaluate_model)
@@ -170,27 +174,34 @@ class Training(FlowSpec, FlowMixin):
     def evaluate_model(self, inputs):
         """Aggregate CV metrics."""
         import numpy as np
-        self.metrics = [ (i.accuracy, i.logloss) for i in inputs ]
-        accs, losses = zip(*self.metrics)
-        self.cv_accuracy = np.mean(accs)
-        self.cv_accuracy_std = np.std(accs)
+        self.mlflow_tracking_uri = getattr(inputs[0], "mlflow_tracking_uri", "http://127.0.0.1:5000")
+        self.mlflow_run_id = getattr(inputs[0], "mlflow_run_id", None)
+        self.metrics = [ (i.f1_score, i.logloss) for i in inputs ]
+        f1, losses = zip(*self.metrics)
+        self.cv_f1 = np.mean(f1)
+        self.cv_f1_std = np.std(f1)
         mlflow.set_tracking_uri(self.mlflow_tracking_uri)
         mlflow.start_run(run_id=self.mlflow_run_id)
         mlflow.log_metrics({
-            'cv_accuracy': self.cv_accuracy,
-            'cv_accuracy_std': self.cv_accuracy_std
+            'cv_f1': self.cv_f1,
+            'cv_f1_std': self.cv_f1_std
         })
         self.next(self.register_model)
 
     @step
     def transform(self):
         """Fit transformers on full data."""
+        self.mlflow_tracking_uri = getattr(self, "mlflow_tracking_uri", "http://127.0.0.1:5000")
+        self.mlflow_run_id = getattr(self, "mlflow_run_id", None)
         df = self.data
-        y = df['species'].values
+        y = df['result_match'].values
+        df.drop('result_match', axis=1, inplace=True)
+
         self.target_transformer = build_target_transformer()
         self.y = self.target_transformer.fit_transform(y.reshape(-1,1)).ravel()
         self.features_transformer = build_features_transformer()
         self.x = self.features_transformer.fit_transform(df)
+
         self.next(self.train_model)
 
     @card
@@ -212,27 +223,27 @@ class Training(FlowSpec, FlowMixin):
     @step
     def register_model(self, inputs):
         """Register if CV acc >= threshold."""
+        import mlflow
         self.merge_artifacts(inputs)
-        if self.cv_accuracy >= self.accuracy_threshold:
+        self.mlflow_tracking_uri = getattr(self, "mlflow_tracking_uri", "http://127.0.0.1:5000")
+        self.mlflow_run_id = getattr(self, "mlflow_run_id", None)
+        if self.cv_f1 >= self.f1_threshold:
             mlflow.set_tracking_uri(self.mlflow_tracking_uri)
             with mlflow.start_run(run_id=self.mlflow_run_id):
+                import mlflow.xgboost
                 mlflow.xgboost.log_model(
                     self.model,
                     artifact_path='model',
-                    registered_model_name='penguins'
+                    registered_model_name='football'
                 )
         else:
-            logging.info("CV accuracy %.3f below threshold %.3f, skipping registration",
-                         self.cv_accuracy, self.accuracy_threshold)
+            logging.info("CV f1 %.3f below threshold %.3f, skipping registration",
+                         self.cv_f1, self.f1_threshold)
         self.next(self.end)
 
     @step
     def end(self):
         logging.info("Training flow completed.")
-
-    def load_dataset(self):
-        return pd.read_parquet('../preprocessed/df.csv')
-
 
 if __name__ == "__main__":
     Training()
