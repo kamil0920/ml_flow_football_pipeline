@@ -251,11 +251,6 @@ class FeaturePipeline(FlowSpec, FlowMixin):
         mlflow.log_dict(stats, 'team_feature_summary.json')
         print("Final feature_df shape ", self.feature_df.shape)
 
-        out_path = 'data/preprocessed/feature_df.csv'
-        os.makedirs(os.path.dirname(out_path), exist_ok=True)
-        self.feature_df.to_csv(out_path, index=False)
-        mlflow.log_artifact(out_path)
-
         self.next(self.end)
 
     @step
