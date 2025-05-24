@@ -2,6 +2,7 @@ import logging
 import os
 
 import mlflow
+import numpy as np
 
 from common import (
     PYTHON,
@@ -10,6 +11,7 @@ from common import (
     build_target_transformer,
     configure_logging,
     packages,
+    build_model,
 )
 
 from metaflow import (
@@ -43,6 +45,7 @@ configure_logging()
 class Training(FlowSpec, FlowMixin):
     """Training pipeline using XGBoost for match result classification."""
 
+    # Hyperparameters
     n_estimators = Parameter(
         "n-estimators", default=100,
         help="Number of trees in the XGBoost ensemble"
@@ -63,6 +66,18 @@ class Training(FlowSpec, FlowMixin):
         "f1-threshold", default=0.65,
         help="Minimum CV f1 to register model"
     )
+    temporal_validation_enabled = Parameter(
+        "temporal-validation", default=True,
+        help="Enable temporal validation splits"
+    )
+    n_older_seasons = Parameter(
+        "n-older-seasons", default=7,
+        help="Number of older seasons to include in training"
+    )
+    test_stage = Parameter(
+        "test-stage", default=7,
+        help="Stage to use as test set"
+    )
 
     @card
     @environment(
@@ -74,13 +89,12 @@ class Training(FlowSpec, FlowMixin):
     )
     @step
     def start(self):
-        """Initialize MLflow, load data, and set params."""
-        self.mlflow_tracking_uri = os.getenv("MLFLOW_TRACKING_URI", "http://127.0.0.1:5000")
+        """Initialize MLflow and parameters."""
+        self.mlflow_tracking_uri = os.getenv("MLFLOW_TRACKING_URI")
+        logging.info("MLFLOW_TRACKING_URI: %s", self.mlflow_tracking_uri)
         mlflow.set_tracking_uri(self.mlflow_tracking_uri)
         self.mode = "production" if current.is_production else "development"
         logging.info("Running in %s mode", self.mode)
-
-        self.data = self.load_train_dataset()
 
         run = mlflow.start_run(run_name=current.run_id)
         self.mlflow_run_id = run.info.run_id
@@ -95,155 +109,183 @@ class Training(FlowSpec, FlowMixin):
         }
         mlflow.log_params(self.xgb_params)
 
-        self.next(self.cross_validation, self.transform)
+        (
+            self.X_train_raw,
+            self.X_val_raw,
+            self.X_test_raw,
+            self.y_train_raw,
+            self.y_val_raw,
+            self.y_test_raw
+        ) = self.load_and_split_data()
+
+        self.next(self.prepare_temporal, self.transform_simple)
 
     @step
-    def cross_validation(self):
-        """Prepare 5-fold splits."""
-        from sklearn.model_selection import KFold
-        self.mlflow_tracking_uri = getattr(self, "mlflow_tracking_uri", "http://127.0.0.1:5000")
-        self.mlflow_run_id = getattr(self, "mlflow_run_id", None)
-        kf = KFold(n_splits=5, shuffle=True, random_state=42)
-        self.folds = list(enumerate(kf.split(self.data)))
-        self.next(self.transform_fold, foreach='folds')
+    def prepare_temporal(self):
+        self.temporal_splits = self.create_temporal_splits(max_test_stage=self.test_stage)
+        self.next(self.train_temporal_splits, foreach='temporal_splits')
 
     @step
-    def transform_fold(self):
-        """Apply transformers on train/test split."""
-        self.mlflow_tracking_uri = getattr(self, "mlflow_tracking_uri", "http://127.0.0.1:5000")
-        self.mlflow_run_id = getattr(self, "mlflow_run_id", None)
-        self.fold, (train_idx, test_idx) = self.input
-        df = self.data
-
-        y = df['result_match'].values
-        df.drop('result_match', axis=1, inplace=True)
-
-        y_train_reshape = y[train_idx].reshape(-1, 1)
-        y_test_reshape = y[test_idx].reshape(-1,1)
+    def train_temporal_splits(self):
+        split = self.input
+        self.split_id = split['split_id']
+        logging.info("Temporal split %d (test_stage=%d)", self.split_id, split['test_stage'])
 
         tgt = build_target_transformer()
-        self.y_train = tgt.fit_transform(y_train_reshape).ravel()
-        self.y_test = tgt.transform(y_test_reshape).ravel()
-        self.target_transformer = tgt
-
         feat = build_features_transformer()
-        self.x_train = feat.fit_transform(df.iloc[train_idx])
-        self.x_test = feat.transform(df.iloc[test_idx])
-        self.features_transformer = feat
 
-        self.next(self.train_fold)
+        y_tr = tgt.fit_transform(split['y_train'].values.reshape(-1, 1)).ravel()
+        X_tr = feat.fit_transform(split['X_train'])
+        y_val = tgt.transform(split['y_val'].values.reshape(-1, 1)).ravel()
+        X_val = feat.transform(split['X_val'])
 
-    @card
-    @resources(memory=4096)
-    @step
-    def train_fold(self):
-        """Train XGBClassifier on one fold."""
-        import mlflow.xgboost
-        from xgboost import XGBClassifier
-
+        # Train
         mlflow.set_tracking_uri(self.mlflow_tracking_uri)
-        with mlflow.start_run(run_id=self.mlflow_run_id, nested=True) as run:
-            mlflow.xgboost.autolog()
-            model = XGBClassifier(**self.xgb_params)
-            model.fit(self.x_train, self.y_train)
-            self.model = model
-            self.run_id = run.info.run_id
-        self.next(self.evaluate_fold)
+        with mlflow.start_run(run_id=self.mlflow_run_id), \
+             mlflow.start_run(run_name=f"temporal-{self.split_id}", nested=True) as run:
+            self.mlflow_split_run_id = run.info.run_id
+            mlflow.autolog(log_models=False)
+            model = build_model(y_tr, **self.xgb_params)
+            model.fit(X_tr, y_tr)
+
+            from sklearn.metrics import f1_score, log_loss
+            preds = model.predict(X_val)
+            proba = model.predict_proba(X_val)
+            self.f1_score = f1_score(y_val, preds)
+            self.logloss = log_loss(y_val, proba)
+            mlflow.log_metrics({
+                'val_f1': self.f1_score,
+                'val_loss': self.logloss
+            })
+
+            print(f'uniqe y_val: {np.unique(y_val)}')
+            print(f'uniqe preds: {np.unique(preds)}')
+
+        self.input_transformed = {
+            'X_train': split['X_train'],
+            'y_train': split['y_train'],
+        }
+        self.next(self.aggregate_temporal)
 
     @step
-    def evaluate_fold(self):
-        """Evaluate on test split."""
-        from sklearn.metrics import f1_score, log_loss
-        self.mlflow_tracking_uri = getattr(self, "mlflow_tracking_uri", "http://127.0.0.1:5000")
-        self.mlflow_run_id = getattr(self, "mlflow_run_id", None)
-        self.run_id = getattr(self, "run_id", None)
-        preds = self.model.predict(self.x_test)
-        proba = self.model.predict_proba(self.x_test)
-        self.f1_score = f1_score(self.y_test, preds)
-        self.logloss = log_loss(self.y_test, proba)
-
-        mlflow.set_tracking_uri(self.mlflow_tracking_uri)
-        mlflow.start_run(run_id=self.run_id)
-        mlflow.log_metrics({
-            'f1_score': self.f1_score,
-            'log_loss': self.logloss
-        })
-        self.next(self.evaluate_model)
-
-    @step
-    def evaluate_model(self, inputs):
-        """Aggregate CV metrics."""
+    def aggregate_temporal(self, inputs):
         import numpy as np
-        self.mlflow_tracking_uri = getattr(inputs[0], "mlflow_tracking_uri", "http://127.0.0.1:5000")
-        self.mlflow_run_id = getattr(inputs[0], "mlflow_run_id", None)
-        self.metrics = [ (i.f1_score, i.logloss) for i in inputs ]
-        f1, losses = zip(*self.metrics)
-        self.cv_f1 = np.mean(f1)
-        self.cv_f1_std = np.std(f1)
-        mlflow.set_tracking_uri(self.mlflow_tracking_uri)
-        mlflow.start_run(run_id=self.mlflow_run_id)
-        mlflow.log_metrics({
-            'cv_f1': self.cv_f1,
-            'cv_f1_std': self.cv_f1_std
-        })
-        self.next(self.register_model)
-
-    @step
-    def transform(self):
-        """Fit transformers on full data."""
-        self.mlflow_tracking_uri = getattr(self, "mlflow_tracking_uri", "http://127.0.0.1:5000")
-        self.mlflow_run_id = getattr(self, "mlflow_run_id", None)
-        df = self.data
-        y = df['result_match'].values
-        df.drop('result_match', axis=1, inplace=True)
-
-        self.target_transformer = build_target_transformer()
-        self.y = self.target_transformer.fit_transform(y.reshape(-1,1)).ravel()
-        self.features_transformer = build_features_transformer()
-        self.x = self.features_transformer.fit_transform(df)
-
-        self.next(self.train_model)
-
-    @card
-    @resources(memory=4096)
-    @step
-    def train_model(self):
-        """Train final XGBClassifier on all data."""
-        import mlflow.xgboost
-        from xgboost import XGBClassifier
+        self.merge_artifacts(inputs, include=["mlflow_run_id", "mlflow_tracking_uri"])
+        metrics = [(i.f1_score, i.logloss) for i in inputs]
+        self.cv_f1, self.loss = np.mean(metrics, axis=0)
+        self.cv_f1_std, self.loss_std = np.std(metrics, axis=0)
 
         mlflow.set_tracking_uri(self.mlflow_tracking_uri)
         with mlflow.start_run(run_id=self.mlflow_run_id):
-            mlflow.xgboost.autolog()
-            model = XGBClassifier(**self.xgb_params)
-            model.fit(self.x, self.y)
-            self.model = model
-        self.next(self.register_model)
+            mlflow.log_metrics({
+                'temporal_f1': self.cv_f1,
+                'temporal_f1_std': self.cv_f1_std,
+                'temporal_loss': self.loss
+            })
+
+        latest = max(inputs, key=lambda x: x.split_id)
+        self.X_train_raw = latest.input_transformed['X_train']
+        self.y_train_raw = latest.input_transformed['y_train']
+        self.is_temporal = True
+        self.next(self.join_branches)
 
     @step
-    def register_model(self, inputs):
-        """Register if CV acc >= threshold."""
+    def transform_simple(self):
+        """Transform the original simple train/val split."""
+        tgt = build_target_transformer()
+        feat = build_features_transformer()
+        self.y_train_simple = tgt.fit_transform(
+            self.y_train_raw.values.reshape(-1, 1)
+        ).ravel()
+        self.X_train_simple = feat.fit_transform(self.X_train_raw)
+
+        self.y_val_simple = tgt.transform(
+            self.y_val_raw.values.reshape(-1, 1)
+        ).ravel()
+        self.X_val_simple = feat.transform(self.X_val_raw)
+
+        self.target_transformer = tgt
+        self.features_transformer = feat
+
+        self.next(self.train_simple)
+
+    @step
+    def train_simple(self):
         import mlflow
-        self.merge_artifacts(inputs)
-        self.mlflow_tracking_uri = getattr(self, "mlflow_tracking_uri", "http://127.0.0.1:5000")
-        self.mlflow_run_id = getattr(self, "mlflow_run_id", None)
+        from sklearn.metrics import f1_score, log_loss
+        mlflow.set_tracking_uri(self.mlflow_tracking_uri)
+        with mlflow.start_run(run_id=self.mlflow_run_id):
+            mlflow.autolog(log_models=False)
+            model = build_model(self.y_train_simple, **self.xgb_params)
+            model.fit(self.X_train_simple, self.y_train_simple)
+
+            preds = model.predict(self.X_val_simple)
+            proba = model.predict_proba(self.X_val_simple)
+            self.simple_f1 = f1_score(self.y_val_simple, preds)
+            self.simple_loss = log_loss(self.y_val_simple, proba)
+            mlflow.log_metrics({
+                'simple_f1': self.simple_f1,
+                'simple_loss': self.simple_loss
+            })
+
+        import pandas as pd
+        self.X_train_raw = pd.concat([self.X_train_raw, self.X_val_raw], ignore_index=True)
+        self.y_train_raw = pd.concat([self.y_train_raw, self.y_val_raw], ignore_index=True)
+        self.is_temporal = False
+        self.next(self.join_branches)
+
+    @step
+    def join_branches(self, inputs):
+        self.merge_artifacts(inputs, include=["mlflow_run_id", "mlflow_tracking_uri", "xgb_params"])
+        chosen = next(i for i in inputs if i.is_temporal == self.temporal_validation_enabled)
+        self.X_train_raw = chosen.X_train_raw
+        self.y_train_raw = chosen.y_train_raw
+        self.cv_f1 = chosen.cv_f1 if chosen.is_temporal else chosen.simple_f1
+        self.loss = chosen.loss if chosen.is_temporal else chosen.simple_loss
+        self.next(self.transform_final)
+
+    @step
+    def transform_final(self):
+        tgt = build_target_transformer()
+        feat = build_features_transformer()
+        self.y_final = tgt.fit_transform(self.y_train_raw.values.reshape(-1,1)).ravel()
+        self.X_final = feat.fit_transform(self.X_train_raw)
+        self.next(self.train_final)
+
+    @card
+    @resources(memory=4096)
+    @step
+    def train_final(self):
+        import mlflow
+        mlflow.set_tracking_uri(self.mlflow_tracking_uri)
+        with mlflow.start_run(run_id=self.mlflow_run_id):
+            mlflow.autolog(log_models=False)
+            model = build_model(self.y_final, **self.xgb_params)
+            model.fit(self.X_final, self.y_final)
+            mlflow.log_params(self.xgb_params)
+        self.final_model = model
+        self.next(self.register)
+
+    @step
+    def register(self):
+        import mlflow
         if self.cv_f1 >= self.f1_threshold:
             mlflow.set_tracking_uri(self.mlflow_tracking_uri)
             with mlflow.start_run(run_id=self.mlflow_run_id):
                 import mlflow.xgboost
                 mlflow.xgboost.log_model(
-                    self.model,
+                    self.final_model,
                     artifact_path='model',
                     registered_model_name='football'
                 )
+                logging.info("Registered model with f1=%.3f", self.cv_f1)
         else:
-            logging.info("CV f1 %.3f below threshold %.3f, skipping registration",
-                         self.cv_f1, self.f1_threshold)
+            logging.info("Skipped registration: f1=%.3f below %.3f", self.cv_f1, self.f1_threshold)
         self.next(self.end)
 
     @step
     def end(self):
-        logging.info("Training flow completed.")
+        logging.info("Flow complete!")
 
 if __name__ == "__main__":
     Training()

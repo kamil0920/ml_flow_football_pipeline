@@ -116,10 +116,136 @@ class FlowMixin:
         logging.info("Loaded dataset with %d rows", len(data))
         return data
 
+    n_older_seasons = Parameter(
+        "n-older-seasons",
+        default=7,
+        help="Number of older seasons to include in training"
+    )
+
+    temporal_validation_enabled = Parameter(
+        "temporal-validation",
+        default=True,
+        help="Enable temporal validation splits"
+    )
+
+    def create_temporal_splits(self, max_test_stage=None):
+        """Create multiple temporal splits for validation."""
+        import pandas as pd
+
+        df_matches = self.load_train_dataset()
+        df_matches = df_matches.sort_values(by=["season", "stage", "date"])
+
+        sorted_seasons = sorted(df_matches["season"].unique())
+        newest_season = sorted_seasons[-1]
+        older_seasons = sorted_seasons[:-1]
+
+        if max_test_stage is None:
+            max_test_stage = df_matches.loc[df_matches["season"] == newest_season, "stage"].max()
+
+        temporal_splits = []
+
+        for test_stage in range(3, max_test_stage + 1):
+            val_stage = test_stage - 1
+
+            if val_stage < 2:
+                continue
+
+            train_seasons = sorted(older_seasons[-self.n_older_seasons:], reverse=True)
+
+            X_train_old = df_matches[df_matches["season"].isin(train_seasons)]
+            X_train_new = df_matches[
+                (df_matches["season"] == newest_season) &
+                (df_matches["stage"] < val_stage)
+                ]
+            df_train = pd.concat([X_train_old, X_train_new], ignore_index=True)
+
+            df_val = df_matches[
+                (df_matches["season"] == newest_season) &
+                (df_matches["stage"] == val_stage)
+                ].reset_index(drop=True)
+
+            df_test = df_matches[
+                (df_matches["season"] == newest_season) &
+                (df_matches["stage"] == test_stage)
+                ].reset_index(drop=True)
+
+            if len(df_train) == 0 or len(df_val) == 0 or len(df_test) == 0:
+                continue
+
+            feature_cols_to_drop = [
+                'match_api_id',
+                'season',
+                'stage',
+                'date',
+                'result_match',
+                'points_home',
+                'points_away'
+            ]
+
+            split_data = {
+                'split_id': len(temporal_splits),
+                'test_stage': test_stage,
+                'val_stage': val_stage,
+                'X_train': df_train.drop(columns=feature_cols_to_drop),
+                'y_train': df_train["result_match"],
+                'X_val': df_val.drop(columns=feature_cols_to_drop),
+                'y_val': df_val["result_match"],
+                'X_test': df_test.drop(columns=feature_cols_to_drop),
+                'y_test': df_test["result_match"],
+                'train_size': len(df_train),
+                'val_size': len(df_val),
+                'test_size': len(df_test)
+            }
+
+            temporal_splits.append(split_data)
+
+        logging.info(f"Created {len(temporal_splits)} temporal validation splits")
+        return temporal_splits
+
+    def load_and_split_data(self, test_size=0.15, val_size=0.15, random_state=None):
+        """Load dataset and create train/val/test splits for simple validation."""
+        from sklearn.model_selection import train_test_split
+
+        df = self.load_train_dataset()
+
+        feature_cols_to_drop = [
+            'match_api_id',
+            'season',
+            'stage',
+            'date',
+            'result_match',
+            'points_home',
+            'points_away'
+        ]
+
+        X = df.drop(columns=feature_cols_to_drop)
+        y = df["result_match"]
+
+        if random_state is None:
+            random_state = 42 if not current.is_production else int(time.time() * 1000) % 2 ** 32
+
+        X_temp, self.X_test, y_temp, self.y_test = train_test_split(
+            X, y, test_size=test_size, random_state=random_state, stratify=y
+        )
+
+        val_size_adjusted = val_size / (1 - test_size)
+        self.X_train, self.X_val, self.y_train, self.y_val = train_test_split(
+            X_temp, y_temp, test_size=val_size_adjusted, random_state=random_state, stratify=y_temp
+        )
+
+        logging.info("Data split completed:")
+        logging.info(f"  Train: {len(self.X_train)} samples")
+        logging.info(f"  Validation: {len(self.X_val)} samples")
+        logging.info(f"  Test: {len(self.X_test)} samples")
+
+        return self.X_train, self.X_val, self.X_test, self.y_train, self.y_val, self.y_test
+
+
 class OutlierHandler(BaseEstimator, TransformerMixin):
     """
     Detects outliers using the IQR method and masks them to NaN.
     """
+
     def __init__(self, iqr_multiplier=1.5):
         self.iqr_multiplier = iqr_multiplier
 
@@ -139,9 +265,11 @@ class OutlierHandler(BaseEstimator, TransformerMixin):
         X_clean = X.where(mask, np.nan)
         return X_clean.values
 
+
 def map_result(df: pd.DataFrame) -> pd.DataFrame:
     frame = (df == 'H').astype(int)
     return frame
+
 
 def build_target_transformer():
     from sklearn.pipeline import Pipeline
@@ -156,7 +284,6 @@ def build_target_transformer():
 
 
 def build_features_transformer():
-    """Preprocess numeric and categorical features."""
     from sklearn.compose import ColumnTransformer, make_column_selector
     from sklearn.impute import SimpleImputer
     from sklearn.pipeline import make_pipeline
@@ -168,7 +295,7 @@ def build_features_transformer():
     )
     categorical_pipe = make_pipeline(
         SimpleImputer(strategy="most_frequent"),
-        OneHotEncoder(handle_unknown="ignore")
+        OneHotEncoder(handle_unknown="ignore", sparse_output=False)  # <-- key fix!
     )
     return ColumnTransformer([
         ("num", numeric_pipe, make_column_selector(dtype_exclude="object")),
@@ -176,12 +303,16 @@ def build_features_transformer():
     ])
 
 
-def build_model(**xgb_params):
+def build_model(y_train, **xgb_params):
     """Instantiate an XGBClassifier with provided hyperparameters."""
     from xgboost import XGBClassifier
 
-    return XGBClassifier(
-        **xgb_params,
-        use_label_encoder=False,
-        eval_metric=["logloss", "aucpr"],
-    )
+    xgb_params.setdefault("use_label_encoder", False)
+    xgb_params.setdefault("eval_metric", ["logloss", "aucpr"])
+    unique, counts = np.unique(y_train, return_counts=True)
+    count_dict = dict(zip(unique, counts))
+    ratio = count_dict[0] / count_dict[1]
+
+    xgb_params["scale_pos_weight"] = ratio
+
+    return XGBClassifier(**xgb_params)
