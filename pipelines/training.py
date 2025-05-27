@@ -93,6 +93,7 @@ class Training(FlowSpec, FlowMixin):
         self.mlflow_tracking_uri = os.getenv("MLFLOW_TRACKING_URI")
         logging.info("MLFLOW_TRACKING_URI: %s", self.mlflow_tracking_uri)
         mlflow.set_tracking_uri(self.mlflow_tracking_uri)
+        mlflow.set_experiment("football_pipeline")
         self.mode = "production" if current.is_production else "development"
         logging.info("Running in %s mode", self.mode)
 
@@ -139,7 +140,6 @@ class Training(FlowSpec, FlowMixin):
         y_val = tgt.transform(split['y_val'].values.reshape(-1, 1)).ravel()
         X_val = feat.transform(split['X_val'])
 
-        # Train
         mlflow.set_tracking_uri(self.mlflow_tracking_uri)
         with mlflow.start_run(run_id=self.mlflow_run_id), \
              mlflow.start_run(run_name=f"temporal-{self.split_id}", nested=True) as run:
@@ -151,15 +151,13 @@ class Training(FlowSpec, FlowMixin):
             from sklearn.metrics import f1_score, log_loss
             preds = model.predict(X_val)
             proba = model.predict_proba(X_val)
+
             self.f1_score = f1_score(y_val, preds)
             self.logloss = log_loss(y_val, proba)
             mlflow.log_metrics({
                 'val_f1': self.f1_score,
                 'val_loss': self.logloss
             })
-
-            print(f'uniqe y_val: {np.unique(y_val)}')
-            print(f'uniqe preds: {np.unique(preds)}')
 
         self.input_transformed = {
             'X_train': split['X_train'],
@@ -174,6 +172,8 @@ class Training(FlowSpec, FlowMixin):
         metrics = [(i.f1_score, i.logloss) for i in inputs]
         self.cv_f1, self.loss = np.mean(metrics, axis=0)
         self.cv_f1_std, self.loss_std = np.std(metrics, axis=0)
+
+        print(f'temporal metrics: {metrics}')
 
         mlflow.set_tracking_uri(self.mlflow_tracking_uri)
         with mlflow.start_run(run_id=self.mlflow_run_id):

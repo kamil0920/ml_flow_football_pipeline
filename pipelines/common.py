@@ -119,6 +119,7 @@ class FlowMixin:
     n_older_seasons = Parameter(
         "n-older-seasons",
         default=7,
+        type=int,
         help="Number of older seasons to include in training"
     )
 
@@ -243,27 +244,41 @@ class FlowMixin:
 
 class OutlierHandler(BaseEstimator, TransformerMixin):
     """
-    Detects outliers using the IQR method and masks them to NaN.
+    Detects outliers using the IQR method and masks them to NaN, only on numeric columns.
+    Non-numeric columns are passed through unchanged.
     """
 
     def __init__(self, iqr_multiplier=1.5):
         self.iqr_multiplier = iqr_multiplier
 
     def fit(self, X, y=None):
-        X = pd.DataFrame(X, columns=getattr(self, 'feature_names_in_', None) or range(X.shape[1]))
-        self.q1_ = X.quantile(0.1)
-        self.q3_ = X.quantile(0.9)
+        if not isinstance(X, pd.DataFrame):
+            X = pd.DataFrame(X, columns=getattr(self, 'feature_names_in_', None)
+                                        or range(X.shape[1]))
+
+        numeric = X.select_dtypes(include=[np.number])
+        self.q1_ = numeric.quantile(0.1, numeric_only=True)
+        self.q3_ = numeric.quantile(0.9, numeric_only=True)
         self.iqr_ = self.q3_ - self.q1_
 
         self.lower_bound_ = self.q1_ - self.iqr_multiplier * self.iqr_
         self.upper_bound_ = self.q3_ + self.iqr_multiplier * self.iqr_
+
+        self.numeric_cols_ = numeric.columns.tolist()
+        self.all_cols_ = X.columns.tolist()
         return self
 
     def transform(self, X):
-        X = pd.DataFrame(X, columns=getattr(self, 'feature_names_in_', None) or range(X.shape[1]))
-        mask = (X >= self.lower_bound_) & (X <= self.upper_bound_)
-        X_clean = X.where(mask, np.nan)
-        return X_clean.values
+        if not isinstance(X, pd.DataFrame):
+            X = pd.DataFrame(X, columns=self.all_cols_)
+
+        X_out = X.copy()
+
+        numeric = X_out[self.numeric_cols_]
+        mask = (numeric >= self.lower_bound_) & (numeric <= self.upper_bound_)
+        X_out[self.numeric_cols_] = numeric.where(mask, np.nan)
+
+        return X_out.values
 
 
 def map_result(df: pd.DataFrame) -> pd.DataFrame:
@@ -295,7 +310,7 @@ def build_features_transformer():
     )
     categorical_pipe = make_pipeline(
         SimpleImputer(strategy="most_frequent"),
-        OneHotEncoder(handle_unknown="ignore", sparse_output=False)  # <-- key fix!
+        OneHotEncoder(handle_unknown="ignore", sparse_output=False)
     )
     return ColumnTransformer([
         ("num", numeric_pipe, make_column_selector(dtype_exclude="object")),
