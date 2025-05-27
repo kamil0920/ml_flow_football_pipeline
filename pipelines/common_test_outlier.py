@@ -7,7 +7,6 @@ from pipelines.common import OutlierHandler
 
 @pytest.fixture
 def sample_df():
-    # Utwórz ramkę z kolumnami numerycznymi i nienumerycznymi
     return pd.DataFrame({
         'num1': [1, 2, 3, 100, -50],
         'num2': [10, 15, 20, 25, 30],
@@ -77,7 +76,7 @@ def test_custom_multiplier_increases_outliers(sample_df):
     nans_small = df_small['num1'].isna().sum()
 
     assert nans_small >= nans_default, \
-        "Mniejszy mnożnik IQR powinien wygenerować co najmniej tyle samo NaN co domyślny albo więcej"
+        "The smaller IQR multiplier should generate at least as many NaN as the default or more"
 
 def test_specific_outliers_set_to_nan_with_low_multiplier(sample_df):
     handler = OutlierHandler(iqr_multiplier=0.1)
@@ -98,5 +97,5 @@ def test_specific_outliers_set_to_nan_with_low_multiplier(sample_df):
     nans_small = df_small['num1'].isna().sum()
 
     assert nans_small >= nans_default, (
-        "Mniejszy mnożnik IQR powinien wygenerować co najmniej tyle samo NaN co domyślny albo więcej"
+        "The smaller IQR multiplier should generate at least as many NaN as the default or more"
     )
