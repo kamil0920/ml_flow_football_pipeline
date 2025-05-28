@@ -123,12 +123,6 @@ class FlowMixin:
         help="Number of older seasons to include in training"
     )
 
-    temporal_validation_enabled = Parameter(
-        "temporal-validation",
-        default=True,
-        help="Enable temporal validation splits"
-    )
-
     def create_temporal_splits(self, max_test_stage=None):
         """Create multiple temporal splits for validation."""
         import pandas as pd
@@ -145,26 +139,32 @@ class FlowMixin:
 
         temporal_splits = []
 
-        for test_stage in range(3, max_test_stage + 1):
-            val_stage = test_stage - 1
+        for test_stage in range(4, max_test_stage + 1):  # Changed from 3 to 4
+            # Use two stages for validation
+            val_stages = [test_stage - 2, test_stage - 1]
+            min_val_stage = min(val_stages)
 
-            if val_stage < 2:
+            # Skip if we don't have enough stages for validation
+            if min_val_stage < 2:
                 continue
 
             train_seasons = sorted(older_seasons[-self.n_older_seasons:], reverse=True)
 
+            # Training data: older seasons + newest season before validation stages
             X_train_old = df_matches[df_matches["season"].isin(train_seasons)]
             X_train_new = df_matches[
                 (df_matches["season"] == newest_season) &
-                (df_matches["stage"] < val_stage)
+                (df_matches["stage"] < min_val_stage)  # Before the first validation stage
                 ]
             df_train = pd.concat([X_train_old, X_train_new], ignore_index=True)
 
+            # Validation data: two consecutive stages before test stage
             df_val = df_matches[
                 (df_matches["season"] == newest_season) &
-                (df_matches["stage"] == val_stage)
+                (df_matches["stage"].isin(val_stages))  # Two stages for validation
                 ].reset_index(drop=True)
 
+            # Test data: remains the same
             df_test = df_matches[
                 (df_matches["season"] == newest_season) &
                 (df_matches["stage"] == test_stage)
@@ -186,7 +186,7 @@ class FlowMixin:
             split_data = {
                 'split_id': len(temporal_splits),
                 'test_stage': test_stage,
-                'val_stage': val_stage,
+                'val_stages': val_stages,  # Changed from val_stage to val_stages
                 'X_train': df_train.drop(columns=feature_cols_to_drop),
                 'y_train': df_train["result_match"],
                 'X_val': df_val.drop(columns=feature_cols_to_drop),
