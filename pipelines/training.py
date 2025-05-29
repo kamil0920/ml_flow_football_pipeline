@@ -198,61 +198,6 @@ class Training(FlowSpec, FlowMixin):
 
         self.next(self.register)
 
-    # @step
-    # def transform_simple(self):
-    #     """Transform the original simple train/val split."""
-    #     tgt = build_target_transformer()
-    #     feat = build_features_transformer()
-    #     self.y_train_simple = tgt.fit_transform(
-    #         self.y_train_raw.values.reshape(-1, 1)
-    #     ).ravel()
-    #     self.X_train_simple = feat.fit_transform(self.X_train_raw)
-    #
-    #     self.y_val_simple = tgt.transform(
-    #         self.y_val_raw.values.reshape(-1, 1)
-    #     ).ravel()
-    #     self.X_val_simple = feat.transform(self.X_val_raw)
-    #
-    #     self.target_transformer = tgt
-    #     self.features_transformer = feat
-    #
-    #     self.next(self.train_simple)
-
-    # @step
-    # def train_simple(self):
-    #     import mlflow
-    #     from sklearn.metrics import f1_score, log_loss
-    #     mlflow.set_tracking_uri(self.mlflow_tracking_uri)
-    #     with mlflow.start_run(run_id=self.mlflow_run_id):
-    #         mlflow.autolog(log_models=False)
-    #         model = build_model(self.y_train_simple, **self.xgb_params)
-    #         model.fit(self.X_train_simple, self.y_train_simple)
-    #
-    #         preds = model.predict(self.X_val_simple)
-    #         proba = model.predict_proba(self.X_val_simple)
-    #         self.simple_f1 = f1_score(self.y_val_simple, preds)
-    #         self.simple_loss = log_loss(self.y_val_simple, proba)
-    #         mlflow.log_metrics({
-    #             'simple_f1': self.simple_f1,
-    #             'simple_loss': self.simple_loss
-    #         })
-    #
-    #     import pandas as pd
-    #     self.X_train_raw = pd.concat([self.X_train_raw, self.X_val_raw], ignore_index=True)
-    #     self.y_train_raw = pd.concat([self.y_train_raw, self.y_val_raw], ignore_index=True)
-    #     self.is_temporal = False
-    #     self.next(self.join_branches)
-
-    # @step
-    # def join_branches(self, inputs):
-    #     self.merge_artifacts(inputs, include=["mlflow_run_id", "mlflow_tracking_uri", "xgb_params"])
-    #     chosen = next(i for i in inputs if i.is_temporal == self.temporal_validation_enabled)
-    #     self.X_train_raw = chosen.X_train_raw
-    #     self.y_train_raw = chosen.y_train_raw
-    #     self.cv_f1 = chosen.cv_f1 if chosen.is_temporal else chosen.simple_f1
-    #     self.loss = chosen.loss if chosen.is_temporal else chosen.simple_loss
-    #     self.next(self.transform_final)
-
     @step
     def transform_final(self):
         self.tgt = build_target_transformer()

@@ -322,12 +322,11 @@ def build_model(y_train, **xgb_params):
     """Instantiate an XGBClassifier with provided hyperparameters."""
     from xgboost import XGBClassifier
 
-    xgb_params.setdefault("use_label_encoder", False)
-    xgb_params.setdefault("eval_metric", ["logloss", "aucpr"])
     unique, counts = np.unique(y_train, return_counts=True)
     count_dict = dict(zip(unique, counts))
     ratio = count_dict[0] / count_dict[1]
 
     xgb_params["scale_pos_weight"] = ratio
+    xgb_params.setdefault("eval_metric", ["logloss", "aucpr"])
 
     return XGBClassifier(**xgb_params)

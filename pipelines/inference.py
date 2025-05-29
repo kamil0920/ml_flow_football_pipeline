@@ -63,9 +63,7 @@ class Model(mlflow.pyfunc.PythonModel):
 
         logging.info("Data collection URI: %s", self.data_collection_uri)
 
-        self.features_transformer = joblib.load(
-            context.artifacts["features_transformer"],
-        )
+        self.features_transformer = joblib.load(context.artifacts["features_transformer"])
         self.target_transformer = joblib.load(context.artifacts["target_transformer"])
         self.model = xgboost.XGBModel.load_model(context.artifacts["model"])
 
@@ -110,18 +108,18 @@ class Model(mlflow.pyfunc.PythonModel):
         # If the caller specified the `data_capture` parameter when making the
         # request, we should use it to determine whether we should capture the
         # input request and prediction.
-        if (
-            params
-            and params.get("data_capture", False) is True
-            or not params
-            and self.data_capture
-        ):
+        if self.should_capture(params):
             self.capture(model_input, model_output)
 
         logging.info("Returning prediction to the client")
         logging.debug("%s", model_output)
 
         return model_output
+
+    def should_capture(self, params: dict[str, Any] | None) -> bool:
+        if params is None:
+            return self.data_capture
+        return bool(params.get("data_capture", False))
 
     def process_input(self, payload: pd.DataFrame) -> pd.DataFrame:
         """Process the input data received from the client.
