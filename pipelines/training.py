@@ -4,6 +4,8 @@ from pathlib import Path
 
 import mlflow
 import numpy as np
+from mlflow import pyfunc
+from inference import Model
 
 from common import (
     PYTHON,
@@ -253,13 +255,13 @@ class Training(FlowSpec, FlowMixin):
 
     @step
     def transform_final(self):
-        tgt = build_target_transformer()
-        feat = build_features_transformer()
-        self.y_trn_final = tgt.fit_transform(self.y_train_raw.values.reshape(-1, 1)).ravel()
-        self.X_trn_final = feat.fit_transform(self.X_train_raw)
+        self.tgt = build_target_transformer()
+        self.feat = build_features_transformer()
+        self.y_trn_final = self.tgt.fit_transform(self.y_train_raw.values.reshape(-1, 1)).ravel()
+        self.X_trn_final = self.feat.fit_transform(self.X_train_raw)
 
-        self.y_val_final = tgt.fit_transform(self.y_train_raw.values.reshape(-1, 1)).ravel()
-        self.X_val_final = feat.fit_transform(self.X_train_raw)
+        self.y_val_final = self.tgt.fit_transform(self.y_train_raw.values.reshape(-1, 1)).ravel()
+        self.X_val_final = self.feat.fit_transform(self.X_train_raw)
         self.next(self.train_final)
 
     @card
@@ -288,9 +290,9 @@ class Training(FlowSpec, FlowMixin):
                 mlflow.start_run(run_id=self.mlflow_run_id),
                 tempfile.TemporaryDirectory() as directory,
             ):
-                import mlflow.xgboost
-                mlflow.xgboost.log_model(
-                    self.final_model,
+                import mlflow.pyfunc
+                pyfunc.log_model(
+                    python_model=Model(data_capture=False),
                     artifact_path='model',
                     registered_model_name='football',
                     code_paths=[(Path(__file__).parent / "inference.py").as_posix()],
@@ -307,6 +309,55 @@ class Training(FlowSpec, FlowMixin):
     @step
     def end(self):
         logging.info("Flow complete!")
+
+    def _get_model_artifacts(self, directory: str):
+        """Return the list of artifacts that will be included with model.
+
+        The model must preprocess the raw input data before making a prediction, so we
+        need to include the Scikit-Learn transformers as part of the model package.
+        """
+        import joblib
+
+        model_path = (Path(directory) / "model.joblib").as_posix()
+        joblib.dump(self.final_model, model_path)
+
+        features_transformer_path = (Path(directory) / "features.joblib").as_posix()
+        target_transformer_path = (Path(directory) / "target.joblib").as_posix()
+        joblib.dump(self.feat, features_transformer_path)
+        joblib.dump(self.tgt, target_transformer_path)
+
+        return {
+            "model": model_path,
+            "features_transformer": features_transformer_path,
+            "target_transformer": target_transformer_path,
+        }
+
+    def _get_model_signature(self):
+        """Return the model's signature.
+
+        The signature defines the expected format for model inputs and outputs. This
+        definition serves as a uniform interface for appropriate and accurate use of
+        a model.
+        """
+        from mlflow.models import infer_signature
+
+        return infer_signature(
+            model_input=self.X_train.head(1),
+            model_output={"prediction": "home_win", "confidence": 0.90},
+            params={"data_capture": False},
+        )
+
+    def _get_model_pip_requirements(self):
+        """Return the list of required packages to run the model in production."""
+        return [
+            f"{package}=={version}"
+            for package, version in packages(
+                "scikit-learn",
+                "pandas",
+                "numpy",
+                "xgboost",
+            ).items()
+        ]
 
 
 if __name__ == "__main__":
