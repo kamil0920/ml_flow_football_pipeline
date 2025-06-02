@@ -4,6 +4,7 @@ from pathlib import Path
 
 import mlflow
 import numpy as np
+from matplotlib import pyplot as plt
 from mlflow import pyfunc
 from inference import Model
 import xgboost as xgb
@@ -231,9 +232,11 @@ class Training(FlowSpec, FlowMixin):
             booster = model.get_booster()
             booster.feature_names = self.feature_names
 
-            ax = xgb.plot_importance(booster, importance_type="weight", figsize=(15, 11))
+            fig, ax = plt.subplots(figsize=(22, 14))
+            xgb.plot_importance(booster, importance_type="weight", ax=ax)
             ax.set_title("Feature Importance")
-            mlflow.log_figure(ax.figure, "feature_importance.png")
+            mlflow.log_figure(fig, "feature_importance.png")
+            plt.close(fig)
 
         self.final_model = model
         self.next(self.register)

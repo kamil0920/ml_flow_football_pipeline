@@ -319,7 +319,7 @@ def build_features_transformer():
     return ColumnTransformer([
         ("num", numeric_pipe, make_column_selector(dtype_exclude="object")),
         ("cat", categorical_pipe, ["seasonal_context", "day_of_week", "is_weekend"]),
-    ])
+    ], verbose_feature_names_out=False)
 
 
 def build_model(y_train, **xgb_params):
