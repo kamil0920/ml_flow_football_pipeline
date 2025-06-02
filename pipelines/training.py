@@ -6,6 +6,7 @@ import mlflow
 import numpy as np
 from mlflow import pyfunc
 from inference import Model
+import xgboost as xgb
 
 from common import (
     PYTHON,
@@ -152,6 +153,9 @@ class Training(FlowSpec, FlowMixin):
         y_tst = tgt.transform(split['y_test'].values.reshape(-1, 1)).ravel()
         X_tst = feat.transform(split['X_test'])
 
+        feature_names = feat.get_feature_names_out()
+        print(f'Feature names: {feature_names}')
+
         print("Training labels:", np.unique(y_tr, return_counts=True))
         print("Validation labels:", np.unique(y_val, return_counts=True))
 
@@ -207,6 +211,9 @@ class Training(FlowSpec, FlowMixin):
 
         self.y_val_final = self.tgt.fit_transform(self.y_train_raw.values.reshape(-1, 1)).ravel()
         self.X_val_final = self.feat.fit_transform(self.X_train_raw)
+
+        self.feature_names = self.feat.get_feature_names_out().tolist()
+
         self.next(self.train_final)
 
     @card
@@ -217,9 +224,17 @@ class Training(FlowSpec, FlowMixin):
         mlflow.set_tracking_uri(self.mlflow_tracking_uri)
         with mlflow.start_run(run_id=self.mlflow_run_id):
             mlflow.autolog(log_models=False)
-            model = build_model(self.y_trn_final, **self.xgb_params)
-            model.fit(self.X_trn_final, self.y_trn_final, eval_set=[(self.X_val_final, self.y_val_final)])
+            evals = [(self.X_val_final, self.y_val_final)]
+            model = build_model(self.X_trn_final, **self.xgb_params)
+            model.fit(self.X_trn_final, self.y_trn_final, eval_set=evals)
             mlflow.log_params(self.xgb_params)
+            booster = model.get_booster()
+            booster.feature_names = self.feature_names
+
+            ax = xgb.plot_importance(booster, importance_type="weight", figsize=(15, 11))
+            ax.set_title("Feature Importance")
+            mlflow.log_figure(ax.figure, "feature_importance.png")
+
         self.final_model = model
         self.next(self.register)
 

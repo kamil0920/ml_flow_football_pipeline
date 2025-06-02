@@ -10,7 +10,6 @@ import numpy as np
 import pandas as pd
 from metaflow import S3, Parameter, current
 from sklearn.base import TransformerMixin, BaseEstimator
-from sklearn.ensemble import IsolationForest
 
 default_py = "3.12"
 
@@ -161,7 +160,7 @@ class FlowMixin:
             # Validation data: two consecutive stages before test stage
             df_val = df_matches[
                 (df_matches["season"] == newest_season) &
-                (df_matches["stage"].isin(val_stages))  # Two stages for validation
+                (df_matches["stage"].isin(val_stages))
                 ].reset_index(drop=True)
 
             # Test data: remains the same
@@ -186,7 +185,7 @@ class FlowMixin:
             split_data = {
                 'split_id': len(temporal_splits),
                 'test_stage': test_stage,
-                'val_stages': val_stages,  # Changed from val_stage to val_stages
+                'val_stages': val_stages,
                 'X_train': df_train.drop(columns=feature_cols_to_drop),
                 'y_train': df_train["result_match"],
                 'X_val': df_val.drop(columns=feature_cols_to_drop),
@@ -279,6 +278,11 @@ class OutlierHandler(BaseEstimator, TransformerMixin):
         X_out[self.numeric_cols_] = numeric.where(mask, np.nan)
 
         return X_out.values
+
+    def get_feature_names_out(self, input_features=None):
+        if input_features is None:
+            raise ValueError("need input_features")
+        return np.asarray(input_features, dtype=str)
 
 
 def map_result(df: pd.DataFrame) -> pd.DataFrame:
