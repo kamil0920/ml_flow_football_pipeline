@@ -11,13 +11,13 @@ awscurl
 packaging
 setuptools
 evidently
-scikit-learn
 pandas
-numpy
 xgboost
 
-metaflow
 metaflow-card-html
+mlflow==2.17.1
+scikit-learn==1.5.2
+numpy==2.1.1
 
 azure-ai-ml
 azureml-mlflow

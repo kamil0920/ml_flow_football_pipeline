@@ -65,7 +65,8 @@ class Model(mlflow.pyfunc.PythonModel):
 
         self.features_transformer = joblib.load(context.artifacts["features_transformer"])
         self.target_transformer = joblib.load(context.artifacts["target_transformer"])
-        self.model = xgboost.XGBModel.load_model(context.artifacts["model"])
+        model_path = context.artifacts["model"]
+        self.model = joblib.load(model_path)
 
         logging.info("Model is ready to receive requests")
 

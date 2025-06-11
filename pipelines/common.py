@@ -10,6 +10,7 @@ import numpy as np
 import pandas as pd
 from metaflow import S3, Parameter, current
 from sklearn.base import TransformerMixin, BaseEstimator
+from sklearn.pipeline import Pipeline
 
 default_py = "3.12"
 
@@ -139,31 +140,26 @@ class FlowMixin:
         temporal_splits = []
 
         for test_stage in range(4, max_test_stage + 1):  # Changed from 3 to 4
-            # Use two stages for validation
             val_stages = [test_stage - 2, test_stage - 1]
             min_val_stage = min(val_stages)
 
-            # Skip if we don't have enough stages for validation
             if min_val_stage < 2:
                 continue
 
             train_seasons = sorted(older_seasons[-self.n_older_seasons:], reverse=True)
 
-            # Training data: older seasons + newest season before validation stages
             X_train_old = df_matches[df_matches["season"].isin(train_seasons)]
             X_train_new = df_matches[
                 (df_matches["season"] == newest_season) &
-                (df_matches["stage"] < min_val_stage)  # Before the first validation stage
+                (df_matches["stage"] < min_val_stage)
                 ]
             df_train = pd.concat([X_train_old, X_train_new], ignore_index=True)
 
-            # Validation data: two consecutive stages before test stage
             df_val = df_matches[
                 (df_matches["season"] == newest_season) &
                 (df_matches["stage"].isin(val_stages))
                 ].reset_index(drop=True)
 
-            # Test data: remains the same
             df_test = df_matches[
                 (df_matches["season"] == newest_season) &
                 (df_matches["stage"] == test_stage)
@@ -209,13 +205,10 @@ class FlowMixin:
         df = self.load_train_dataset()
 
         feature_cols_to_drop = [
-            'match_api_id',
             'season',
             'stage',
             'date',
-            'result_match',
-            'points_home',
-            'points_away'
+            'result_match'
         ]
 
         X = df.drop(columns=feature_cols_to_drop)
@@ -285,23 +278,6 @@ class OutlierHandler(BaseEstimator, TransformerMixin):
         return np.asarray(input_features, dtype=str)
 
 
-def map_result(df: pd.DataFrame) -> pd.DataFrame:
-    frame = (df == 'H').astype(int)
-    return frame
-
-
-def build_target_transformer():
-    from sklearn.pipeline import Pipeline
-    from sklearn.preprocessing import FunctionTransformer
-
-    """
-    Returns a 1-step pipeline that maps result_match 'H'→1, others→0.
-    """
-    return Pipeline([
-        ('map_result', FunctionTransformer(map_result, validate=False))
-    ])
-
-
 def build_features_transformer():
     from sklearn.compose import ColumnTransformer, make_column_selector
     from sklearn.impute import SimpleImputer
@@ -334,3 +310,28 @@ def build_model(y_train, **xgb_params):
     xgb_params.setdefault("eval_metric", ["logloss", "aucpr"])
 
     return XGBClassifier(**xgb_params)
+
+
+class HvsRestBinarizer(BaseEstimator, TransformerMixin):
+    def __init__(self, positive='H'):
+        self.positive = positive
+
+    def fit(self, X, y=None):
+        X_arr = np.asarray(X).ravel()
+        self.classes_ = np.unique(X_arr)
+        if self.positive not in self.classes_:
+            raise ValueError(f"positive='{self.positive}' nie występuje w y.")
+        return self
+
+    def transform(self, X):
+        X = pd.Series(X)
+        return (X == self.positive).astype(int).to_numpy().reshape(-1, 1)
+
+def build_target_transformer(positive: str = "H"):
+    """
+    Returns a 1-step label binarization pipeline:
+    positive → 1, rest → 0
+    """
+    return Pipeline([
+        ("h_vs_rest", HvsRestBinarizer(positive=positive))
+    ])

@@ -75,10 +75,6 @@ class Training(FlowSpec, FlowMixin):
         "f1-threshold", default=0.55,
         help="Minimum CV f1 to register model"
     )
-    temporal_validation_enabled = Parameter(
-        "temporal-validation", default=True,
-        help="Enable temporal validation splits"
-    )
     n_older_seasons = Parameter(
         "n-older-seasons", default=7,
         help="Number of older seasons to include in training"
@@ -86,6 +82,10 @@ class Training(FlowSpec, FlowMixin):
     test_stage = Parameter(
         "test-stage", default=7,
         help="Stage to use as test set"
+    )
+    positive_class = Parameter(
+        "positive-class", default='H',
+        help="Class to use as positive class"
     )
 
     @card
@@ -144,14 +144,14 @@ class Training(FlowSpec, FlowMixin):
         self.split_id = split['split_id']
         logging.info("Temporal split %d (test_stage=%d)", self.split_id, split['test_stage'])
 
-        tgt = build_target_transformer()
+        tgt = build_target_transformer(positive=self.positive_class)
         feat = build_features_transformer()
 
-        y_tr = tgt.fit_transform(split['y_train'].values.reshape(-1, 1)).ravel()
+        y_tr = tgt.fit_transform(split['y_train']).ravel()
         X_tr = feat.fit_transform(split['X_train'])
-        y_val = tgt.transform(split['y_val'].values.reshape(-1, 1)).ravel()
+        y_val = tgt.transform(split['y_val']).ravel()
         X_val = feat.transform(split['X_val'])
-        y_tst = tgt.transform(split['y_test'].values.reshape(-1, 1)).ravel()
+        y_tst = tgt.transform(split['y_test']).ravel()
         X_tst = feat.transform(split['X_test'])
 
         feature_names = feat.get_feature_names_out()
@@ -207,10 +207,10 @@ class Training(FlowSpec, FlowMixin):
     def transform_final(self):
         self.tgt = build_target_transformer()
         self.feat = build_features_transformer()
-        self.y_trn_final = self.tgt.fit_transform(self.y_train_raw.values.reshape(-1, 1)).ravel()
+        self.y_trn_final = self.tgt.fit_transform(self.y_train_raw).ravel()
         self.X_trn_final = self.feat.fit_transform(self.X_train_raw)
 
-        self.y_val_final = self.tgt.fit_transform(self.y_train_raw.values.reshape(-1, 1)).ravel()
+        self.y_val_final = self.tgt.fit_transform(self.y_train_raw).ravel()
         self.X_val_final = self.feat.fit_transform(self.X_train_raw)
 
         self.feature_names = self.feat.get_feature_names_out().tolist()
@@ -258,7 +258,9 @@ class Training(FlowSpec, FlowMixin):
                     python_model=Model(data_capture=False),
                     artifact_path='model',
                     registered_model_name='football',
-                    code_paths=[(Path(__file__).parent / "inference.py").as_posix()],
+                    code_paths=[(Path(__file__).parent / "inference.py").as_posix(),
+                                (Path(__file__).parent / "common.py").as_posix(),
+                                ],
                     artifacts=self._get_model_artifacts(directory),
                     pip_requirements=self._get_model_pip_requirements(),
                     signature=self._get_model_signature(),
