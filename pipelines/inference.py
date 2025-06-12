@@ -65,8 +65,7 @@ class Model(mlflow.pyfunc.PythonModel):
 
         self.features_transformer = joblib.load(context.artifacts["features_transformer"])
         self.target_transformer = joblib.load(context.artifacts["target_transformer"])
-        model_path = context.artifacts["model"]
-        self.model = joblib.load(model_path)
+        self.model = joblib.load(context.artifacts["model"])
 
         logging.info("Model is ready to receive requests")
 
@@ -102,7 +101,7 @@ class Model(mlflow.pyfunc.PythonModel):
         transformed_payload = self.process_input(model_input)
         if transformed_payload is not None:
             logging.info("Making a prediction using the transformed payload...")
-            predictions = self.model.predict(transformed_payload, verbose=0)
+            predictions = self.model.predict_proba(transformed_payload)
 
             model_output = self.process_output(predictions)
 
@@ -154,9 +153,7 @@ class Model(mlflow.pyfunc.PythonModel):
             # Let's transform the prediction index back to the
             # original result_match. We can use the target transformer
             # to access the list of classes.
-            classes = self.target_transformer.named_transformers_[
-                "result_match"
-            ].categories_[0]
+            classes = classes = self.target_transformer.named_steps["h_vs_rest"].classes_
             prediction = np.vectorize(lambda x: classes[x])(prediction)
 
             # We can now return the prediction and the confidence from the model.
