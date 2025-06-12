@@ -205,7 +205,7 @@ class Training(FlowSpec, FlowMixin):
 
     @step
     def transform_final(self):
-        self.tgt = build_target_transformer()
+        self.tgt = build_target_transformer(positive=self.positive_class)
         self.feat = build_features_transformer()
         self.y_trn_final = self.tgt.fit_transform(self.y_train_raw).ravel()
         self.X_trn_final = self.feat.fit_transform(self.X_train_raw)

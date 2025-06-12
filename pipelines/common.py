@@ -313,25 +313,40 @@ def build_model(y_train, **xgb_params):
 
 
 class HvsRestBinarizer(BaseEstimator, TransformerMixin):
-    def __init__(self, positive='H'):
+    """
+    0 → negative_label  (default 'not_<positive>')
+    1 → positive
+    """
+
+    def __init__(self, positive="H", negative_label="Home not win"):
         self.positive = positive
+        self.negative_label = negative_label
 
     def fit(self, X, y=None):
         X_arr = np.asarray(X).ravel()
-        self.classes_ = np.unique(X_arr)
-        if self.positive not in self.classes_:
-            raise ValueError(f"positive='{self.positive}' nie występuje w y.")
+        if self.positive not in X_arr:
+            raise ValueError(f"Positive class: '{self.positive}' not exist.")
+
+        self.negative_label_ = (
+            self.negative_label if self.negative_label is not None
+            else f"not_{self.positive}"
+        )
+
+        self.classes_ = np.array([self.negative_label_, self.positive])
         return self
 
     def transform(self, X):
-        X = pd.Series(X)
-        return (X == self.positive).astype(int).to_numpy().reshape(-1, 1)
+        X_arr = np.asarray(X).ravel()
+        return (X_arr == self.positive).astype(int).reshape(-1, 1)
 
-def build_target_transformer(positive: str = "H"):
-    """
-    Returns a 1-step label binarization pipeline:
-    positive → 1, rest → 0
-    """
-    return Pipeline([
-        ("h_vs_rest", HvsRestBinarizer(positive=positive))
-    ])
+    def inverse_transform(self, y):
+        y_arr = np.asarray(y).ravel()
+        return np.where(
+            y_arr == 1,
+            self.positive,
+            self.negative_label_
+        ).reshape(-1, 1)
+
+
+def build_target_transformer(positive="H"):
+    return Pipeline([("h_vs_rest", HvsRestBinarizer(positive=positive))])

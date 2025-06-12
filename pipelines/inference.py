@@ -26,10 +26,10 @@ class Model(mlflow.pyfunc.PythonModel):
     """
 
     def __init__(
-        self,
-        data_collection_uri: str | None = "football.db",
-        *,
-        data_capture: bool = False,
+            self,
+            data_collection_uri: str | None = "football.db",
+            *,
+            data_capture: bool = False,
     ) -> None:
         """Initialize the model.
 
@@ -70,10 +70,10 @@ class Model(mlflow.pyfunc.PythonModel):
         logging.info("Model is ready to receive requests")
 
     def predict(
-        self,
-        context: PythonModelContext,  # noqa: ARG002
-        model_input: pd.DataFrame | list[dict[str, Any]] | dict[str, Any] | list[Any],
-        params: dict[str, Any] | None = None,
+            self,
+            context: PythonModelContext,  # noqa: ARG002
+            model_input: pd.DataFrame | list[dict[str, Any]] | dict[str, Any] | list[Any],
+            params: dict[str, Any] | None = None,
     ) -> list:
         """Handle the request received from the client.
 
@@ -137,34 +137,24 @@ class Model(mlflow.pyfunc.PythonModel):
 
         return result
 
-    def process_output(self, output: np.ndarray) -> list:
+    def process_output(self, proba):
         """Process the prediction received from the model.
-
         This method is responsible for transforming the prediction received from the
         model into a readable format that will be returned to the client.
         """
-        logging.info("Processing prediction received from the model...")
+        idx = np.argmax(proba, axis=1)
+        confidence = np.max(proba, axis=1)
 
-        result = []
-        if output is not None:
-            prediction = np.argmax(output, axis=1)
-            confidence = np.max(output, axis=1)
+        labels = (
+            self.target_transformer
+            .inverse_transform(idx.reshape(-1, 1))
+            .ravel()
+        )
 
-            # Let's transform the prediction index back to the
-            # original result_match. We can use the target transformer
-            # to access the list of classes.
-            classes = classes = self.target_transformer.named_steps["h_vs_rest"].classes_
-            prediction = np.vectorize(lambda x: classes[x])(prediction)
-
-            # We can now return the prediction and the confidence from the model.
-            # Notice that we need to unwrap the numpy values so we can serialize the
-            # output as JSON.
-            result = [
-                {"prediction": p.item(), "confidence": c.item()}
-                for p, c in zip(prediction, confidence, strict=True)
-            ]
-
-        return result
+        return [
+            {"prediction": str(lbl), "confidence": float(conf)}
+            for lbl, conf in zip(labels, confidence, strict=True)
+        ]
 
     def capture(self, model_input: pd.DataFrame, model_output: list) -> None:
         """Save the input request and output prediction to the database.
