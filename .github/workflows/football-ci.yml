@@ -20,7 +20,7 @@ jobs:
           pip install -r requirements.txt
       - name: Run feature pipeline
         run: |
-          python pipelines/feature.py
+          python3 pipelines/feature.py --environment=pypi run
 
   training:
     needs: features
@@ -36,7 +36,7 @@ jobs:
           pip install -r requirements.txt
       - name: Run training pipeline
         run: |
-          python pipelines/training.py
+          python3 pipelines/training.py --environment=pypi run
 
   inference:
     needs: training
@@ -52,4 +52,4 @@ jobs:
           pip install -r requirements.txt
       - name: Run inference
         run: |
-          python pipelines/inference.py
+          python3 pipelines/inference.py --environment=pypi run
