@@ -51,14 +51,14 @@ class FlowMixin:
         help="Local copy of the match_stats dataset. This file will be included in the "
              "flow and will be used whenever the flow is executed in development mode."
         ,
-        default="data/raw/match_details.csv",
+        default="dataset/raw/match_details.csv",
     )
     players_stats_dataset = Parameter(
         "players-stats-dataset",
         help="Local copy of the players_stats_dataset dataset. This file will be included in the "
              "flow and will be used whenever the flow is executed in development mode."
         ,
-        default="data/raw/player_attributes.csv",
+        default="dataset/raw/player_attributes.csv",
     )
 
     def load_raw_match_details_dataset(self):
@@ -318,7 +318,7 @@ class HvsRestBinarizer(BaseEstimator, TransformerMixin):
     1 → positive
     """
 
-    def __init__(self, positive="H", negative_label="Home not win"):
+    def __init__(self, positive="H", negative_label=None):
         self.positive = positive
         self.negative_label = negative_label
 
