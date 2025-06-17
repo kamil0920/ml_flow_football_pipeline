@@ -1,0 +1,17 @@
+name: Start temp MLflow
+description: Run temp server MLflow and export MLFLOW_TRACKING_URI
+runs:
+  using: "composite"
+  steps:
+    - shell: bash
+      run: |
+        mlflow server \
+          --backend-store-uri sqlite:///mlruns.db \
+          --default-artifact-root ./mlruns \
+          --host 0.0.0.0 --port 5000 &
+        echo "MLFLOW_TRACKING_URI=http://127.0.0.1:5000" >> "$GITHUB_ENV"
+        for i in {1..10}; do
+          curl -s http://127.0.0.1:5000/health || true
+          if [ $? -eq 0 ]; then break; fi
+          sleep 1
+        done
