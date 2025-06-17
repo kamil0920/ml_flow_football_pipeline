@@ -8,19 +8,36 @@ on:
 jobs:
   features:
     runs-on: ubuntu-latest
+
     steps:
-      - uses: actions/checkout@v4
-      - name: Set up Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: '3.12'
-      - name: Install deps
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-      - name: Run feature pipeline
-        run: |
-          python3 pipelines/feature.py --environment=pypi run
+    - uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+
+    - name: Install deps
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+
+    - name: Start temp MLflow
+      run: |
+        mlflow server \
+          --backend-store-uri sqlite:///mlruns.db \
+          --default-artifact-root ./mlruns \
+          --host 0.0.0.0 --port 5000 &
+        echo "MLFLOW_TRACKING_URI=http://127.0.0.1:5000" >> "$GITHUB_ENV"
+        for i in {1..10}; do
+          curl -s http://127.0.0.1:5000/health || true
+          if [ $? -eq 0 ]; then break; fi
+          sleep 1
+        done
+
+    - name: Run feature pipeline
+      run: |
+        python3 pipelines/feature.py --environment=pypi run
 
   training:
     needs: features
