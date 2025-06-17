@@ -1,0 +1,52 @@
+name: Train Model
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  features:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.12'
+      - name: Install deps
+        run: |
+          pip install -r requirements.txt
+      - name: Run feature pipeline
+        run: |
+          python pipelines/feature.py
+
+  training:
+    needs: features
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v4
+        with:
+          python-version: '3.12'
+      - name: Install deps
+        run: |
+          pip install -r requirements.txt
+      - name: Run training pipeline
+        run: |
+          python pipelines/training.py
+
+  inference:
+    needs: training
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v4
+        with:
+          python-version: '3.12'
+      - name: Install deps
+        run: |
+          pip install -r requirements.txt
+      - name: Run inference
+        run: |
+          python pipelines/inference.py
