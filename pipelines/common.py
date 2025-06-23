@@ -1,3 +1,4 @@
+import glob
 import logging
 import logging.config
 import os
@@ -51,14 +52,14 @@ class FlowMixin:
         help="Local copy of the match_stats dataset. This file will be included in the "
              "flow and will be used whenever the flow is executed in development mode."
         ,
-        default="dataset/raw/match_details.csv",
+        default="dataset/raw/match/*.csv",
     )
     players_stats_dataset = Parameter(
         "players-stats-dataset",
         help="Local copy of the players_stats_dataset dataset. This file will be included in the "
              "flow and will be used whenever the flow is executed in development mode."
         ,
-        default="dataset/raw/player_attributes.csv",
+        default="dataset/raw/player/*.csv",
     )
 
     def load_raw_match_details_dataset(self):
@@ -78,8 +79,19 @@ class FlowMixin:
                 frames = [pd.read_csv(StringIO(f.text)) for f in files]
                 player_data = pd.concat(frames, ignore_index=True)
         else:
-            match_data = pd.read_csv(self.match_details_dataset)
-            player_data = pd.read_csv(self.players_stats_dataset)
+            match_files   = glob.glob(self.match_details_dataset)
+            player_files  = glob.glob(self.players_stats_dataset)
+
+            if not match_files:
+                raise FileNotFoundError(f"No match CSVs found for pattern {self.match_details_dataset}")
+            if not player_files:
+                raise FileNotFoundError(f"No player CSVs found for pattern {self.players_stats_dataset}")
+
+            match_frames = [pd.read_csv(f) for f in match_files]
+            player_frames = [pd.read_csv(f) for f in player_files]
+
+            match_data = pd.concat(match_frames, ignore_index=True)
+            player_data = pd.concat(player_frames, ignore_index=True)
 
         seed = int(time.time() * 1000) if current.is_production else 42
         rng = np.random.default_rng(seed)
