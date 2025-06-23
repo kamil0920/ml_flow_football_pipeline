@@ -2,8 +2,7 @@ name: Train Model
 
 on:
   push:
-    branches:
-      - main
+    branches: [ main ]
 
 jobs:
   features:
@@ -12,10 +11,8 @@ jobs:
     steps:
     - uses: actions/checkout@v4
 
-    - name: Set up Python
-      uses: actions/setup-python@v4
-      with:
-        python-version: '3.11'
+    - uses: actions/setup-python@v4
+      with: { python-version: '3.11' }
 
     - name: Install deps
       run: |
@@ -26,8 +23,7 @@ jobs:
       uses: ./.github/actions/start-mlflow
 
     - name: Run feature pipeline
-      run: |
-        python3 pipelines/feature.py --environment=pypi run
+      run: python3 pipelines/feature.py --environment=pypi run
 
     - name: Upload pre-processed data
       uses: actions/upload-artifact@v4
@@ -38,49 +34,59 @@ jobs:
   training:
     needs: features
     runs-on: ubuntu-latest
+
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v4
-        with:
-          python-version: '3.12'
+    - uses: actions/checkout@v4
 
-      - name: Install deps
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
+    - uses: actions/setup-python@v4
+      with: { python-version: '3.11' }
 
-      - name: Start temp MLflow
-        uses: ./.github/actions/start-mlflow
+    - name: Install deps
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
 
-      - name: Run training pipeline
-        run: |
-          python3 pipelines/training.py --environment=pypi run
+    - name: Download pre-processed data
+      uses: actions/download-artifact@v4
+      with:
+        name: train-data
+        path: data/preprocessed
 
-      - name: Upload model artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: trained-model
-          path: mlruns/**/artifacts/model
+    - name: Start temp MLflow
+      uses: ./.github/actions/start-mlflow
+
+    - name: Run training pipeline
+      run: python3 pipelines/training.py --environment=pypi run
+
+    - name: Upload trained model
+      uses: actions/upload-artifact@v4
+      with:
+        name: trained-model
+        path: mlruns/**/artifacts/model
 
   inference:
     needs: training
     runs-on: ubuntu-latest
+
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v4
-        with:
-          python-version: '3.12'
-      - name: Install deps
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-      - name: Download model artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: trained-model
-          path: mlruns
-      - name: Start temp MLflow
-        uses: ./.github/actions/start-mlflow
-      - name: Run inference
-        run: |
-          python3 pipelines/inference.py --environment=pypi run
+    - uses: actions/checkout@v4
+
+    - uses: actions/setup-python@v4
+      with: { python-version: '3.12' }
+
+    - name: Install deps
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+
+    - name: Download trained model
+      uses: actions/download-artifact@v4
+      with:
+        name: trained-model
+        path: mlruns
+
+    - name: Start temp MLflow
+      uses: ./.github/actions/start-mlflow
+
+    - name: Run inference
+      run: python3 pipelines/inference.py --environment=pypi run
