@@ -168,15 +168,20 @@ class Training(FlowSpec, FlowMixin):
             model = build_model(y_tr, **self.xgb_params)
             model.fit(X_tr, y_tr, eval_set=[(X_val, y_val)])
 
-            from sklearn.metrics import f1_score, log_loss
+            from sklearn.metrics import f1_score, log_loss, precision_score, recall_score
             preds = model.predict(X_tst)
             proba = model.predict_proba(X_tst)
 
             self.f1_score = f1_score(y_tst, preds)
+            self.precision = precision_score(y_tst, preds)
+            self.recall = recall_score(y_tst, preds)
             self.logloss = log_loss(y_tst, proba)
+
             mlflow.log_metrics({
                 'val_f1': self.f1_score,
-                'val_loss': self.logloss
+                'val_precision': self.precision,
+                'val_recall': self.recall,
+                'val_logloss': self.logloss
             })
 
         self.next(self.aggregate_temporal)
@@ -185,20 +190,36 @@ class Training(FlowSpec, FlowMixin):
     def aggregate_temporal(self, inputs):
         import numpy as np
         self.merge_artifacts(inputs, include=["mlflow_run_id", "mlflow_tracking_uri"])
-        metrics = [(i.f1_score, i.logloss) for i in inputs]
-        self.cv_f1, self.loss = np.mean(metrics, axis=0)
-        self.cv_f1_std, self.loss_std = np.std(metrics, axis=0)
 
-        logging.info("Accuracy: %f ±%f", self.cv_f1, self.loss)
-        logging.info("Loss: %f ±%f", self.cv_f1_std, self.loss_std)
+        metrics = [
+            (i.f1_score, i.precision, i.recall, i.logloss)
+            for i in inputs
+        ]
+
+        arr = np.array(metrics)
+
+        self.cv_f1, self.cv_precision, self.cv_recall, self.temporal_loss = arr.mean(axis=0)
+        self.cv_f1_std, self.cv_precision_std, self.cv_recall_std, self.temporal_loss_std = arr.std(axis=0)
+
+        logging.info(
+            "F1: %f ± %f; Precision: %f ± %f; Recall: %f ± %f; Loss: %f ± %f",
+            self.cv_f1, self.cv_f1_std,
+            self.cv_precision, self.cv_precision_std,
+            self.cv_recall, self.cv_recall_std,
+            self.temporal_loss, self.temporal_loss_std
+        )
 
         mlflow.set_tracking_uri(self.mlflow_tracking_uri)
         with mlflow.start_run(run_id=self.mlflow_run_id):
             mlflow.log_metrics({
-                'temporal_f1': self.cv_f1,
-                'temporal_f1_std': self.cv_f1_std,
-                'temporal_loss': self.loss,
-                'temporal_loss_std': self.loss_std
+                'temporal_f1':            self.cv_f1,
+                'temporal_f1_std':        self.cv_f1_std,
+                'temporal_precision':     self.cv_precision,
+                'temporal_precision_std': self.cv_precision_std,
+                'temporal_recall':        self.cv_recall,
+                'temporal_recall_std':    self.cv_recall_std,
+                'temporal_loss':          self.temporal_loss,
+                'temporal_loss_std':      self.temporal_loss_std,
             })
 
         self.next(self.register)
