@@ -6,6 +6,7 @@ import mlflow
 import numpy as np
 from matplotlib import pyplot as plt
 from mlflow import pyfunc
+from mlflow.tracking import MlflowClient
 from inference import Model
 import xgboost as xgb
 
@@ -50,7 +51,6 @@ configure_logging()
 class Training(FlowSpec, FlowMixin):
     """Training pipeline using XGBoost for match result classification."""
 
-    # Hyperparameters
     n_estimators = Parameter(
         "n-estimators", default=100,
         help="Number of trees in the XGBoost ensemble"
@@ -268,28 +268,63 @@ class Training(FlowSpec, FlowMixin):
         import mlflow
         self.merge_artifacts(inputs)
 
-        if self.cv_f1 >= self.f1_threshold:
-            mlflow.set_tracking_uri(self.mlflow_tracking_uri)
-            with (
-                mlflow.start_run(run_id=self.mlflow_run_id),
-                tempfile.TemporaryDirectory() as directory,
-            ):
-                import mlflow.pyfunc
-                pyfunc.log_model(
-                    python_model=Model(data_capture=False),
-                    artifact_path='model',
-                    registered_model_name='football',
-                    code_paths=[(Path(__file__).parent / "inference.py").as_posix(),
-                                (Path(__file__).parent / "common.py").as_posix(),
-                                ],
-                    artifacts=self._get_model_artifacts(directory),
-                    pip_requirements=self._get_model_pip_requirements(),
-                    signature=self._get_model_signature(),
-                    example_no_conversion=True,
-                )
-                logging.info("Registered model with f1=%.3f", self.cv_f1)
-        else:
-            logging.info("Skipped registration: f1=%.3f below %.3f", self.cv_f1, self.f1_threshold)
+        MODEL_NAME = "football"
+        ARTIFACT_PATH = "model"
+        METRIC_NAME = "temporal_f1"
+        ALIAS = "champion"
+
+        mlflow.set_tracking_uri(self.mlflow_tracking_uri)
+        client = MlflowClient()
+
+
+        best_score = float("-inf")
+        best_version = None
+
+        for mv in client.search_model_versions(f"name='{MODEL_NAME}'"):
+            run_metrics = client.get_run(mv.run_id).data.metrics
+            score = run_metrics.get(METRIC_NAME)
+            if score is not None and score > best_score:
+                best_score, best_version = score, mv.version
+
+        new_score = self.cv_f1
+        logging.info("best in registry = %.4f, new run = %.4f",
+                     best_score, new_score)
+
+        if new_score <= best_score:
+            logging.info("New model is not better → registration skipped.")
+            return
+
+
+        with (
+            mlflow.start_run(run_id=self.mlflow_run_id),
+            tempfile.TemporaryDirectory() as directory,
+        ):
+            import mlflow.pyfunc
+            pyfunc.log_model(
+                python_model=Model(data_capture=False),
+                artifact_path=ARTIFACT_PATH,
+                registered_model_name=MODEL_NAME,
+                code_paths=[(Path(__file__).parent / "inference.py").as_posix(),
+                            (Path(__file__).parent / "common.py").as_posix(),
+                            ],
+                artifacts=self._get_model_artifacts(directory),
+                pip_requirements=self._get_model_pip_requirements(),
+                signature=self._get_model_signature(),
+                example_no_conversion=True,
+            )
+
+            new_version = client.get_latest_versions(MODEL_NAME, stages=["None"])[0].version
+            client.set_registered_model_alias(MODEL_NAME, ALIAS, new_version)
+            client.transition_model_version_stage(
+                name=MODEL_NAME,
+                version=new_version,
+                stage="Production",
+                archive_existing_versions=True,
+            )
+
+            mlflow.log_metric(METRIC_NAME, new_score)
+            logging.info("Registered v%s as champion (f1=%.4f)",new_version, new_score)
+
         self.next(self.end)
 
     @step
